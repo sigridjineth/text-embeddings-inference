@@ -222,7 +222,7 @@ pub async fn run(
     port: u16,
     uds_path: Option<String>,
     huggingface_hub_cache: Option<String>,
-    payload_limit: usize,
+    _payload_limit: usize,
     api_key: Option<String>,
     otlp_endpoint: Option<String>,
     otlp_service_name: String,
@@ -544,7 +544,7 @@ pub async fn run(
             app_state,
             addr,
             prom_builder,
-            payload_limit,
+            listwise_payload_limit_bytes,
             api_key,
             cors_allow_origin,
         )

@@ -15,7 +15,7 @@ use crate::{
 };
 use ::http::HeaderMap;
 use anyhow::Context;
-use axum::extract::{DefaultBodyLimit, Extension};
+use axum::extract::Extension;
 use axum::http::HeaderValue;
 use axum::http::{Method, StatusCode};
 use axum::routing::{get, post};
@@ -38,6 +38,7 @@ use text_embeddings_core::tokenization::{into_tokens, SimpleToken as CoreSimpleT
 use text_embeddings_core::TextEmbeddingsError;
 use tokio::sync::OwnedSemaphorePermit;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tracing::instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utoipa::OpenApi;
@@ -1881,7 +1882,7 @@ pub async fn run(
         .layer(axum::middleware::from_fn(
             logging::http::trace_context_middleware,
         ))
-        .layer(DefaultBodyLimit::max(payload_limit))
+        .layer(RequestBodyLimitLayer::new(payload_limit))
         .layer(cors_layer);
 
     // Run server

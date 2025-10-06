@@ -388,16 +388,30 @@ pub async fn rerank_listwise(
     let total_time = start_time.elapsed();
     tracing::Span::current().record("total_time_ms", total_time.as_millis() as f64);
 
-    // Headers for response metadata
+    // Headers for response metadata (from PLAN.md section 8.1)
     let mut headers = HeaderMap::new();
     headers.insert(
-        "x-listwise-blocks",
+        "x-total-time",
+        total_time.as_millis().to_string().parse().unwrap(),
+    );
+
+    // Operational visibility headers for debugging/monitoring
+    headers.insert("x-tei-rerank-strategy", "listwise".parse().unwrap());
+    headers.insert(
+        "x-tei-lbnl-blocks",
         block_weights.len().to_string().parse().unwrap(),
     );
     headers.insert(
-        "x-total-time-ms",
-        total_time.as_millis().to_string().parse().unwrap(),
+        "x-tei-lbnl-docs",
+        req.texts.len().to_string().parse().unwrap(),
     );
+    headers.insert(
+        "x-tei-lbnl-ordering",
+        format!("{:?}", config.ordering).parse().unwrap(),
+    );
+    if let Some(seed) = config.random_seed {
+        headers.insert("x-tei-lbnl-seed", seed.to_string().parse().unwrap());
+    }
 
     Ok((headers, Json(RerankResponse(ranks))))
 }

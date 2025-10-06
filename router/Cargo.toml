@@ -47,7 +47,7 @@ veil = "0.1.6"
 axum = { version = "0.7.4", features = ["json"], optional = true }
 axum-tracing-opentelemetry = { version = "0.18.1", optional = true }
 base64 = { version = "0.22.1", optional = true }
-tower-http = { version = "0.5.1", features = ["cors"], optional = true }
+tower-http = { version = "0.5.1", features = ["cors", "limit"], optional = true }
 utoipa = { version = "4.2", features = ["axum_extras"], optional = true }
 utoipa-swagger-ui = { version = "7.1", features = ["axum", "vendored"], optional = true }
 
@@ -96,3 +96,5 @@ candle-cuda-volta = ["candle", "text-embeddings-backend/cuda", "dep:cudarc"]
 static-linking = ["cudarc?/static-linking", "intel-mkl-src?/mkl-static-lp64-iomp"]
 dynamic-linking = ["cudarc?/dynamic-linking", "intel-mkl-src?/mkl-dynamic-lp64-iomp"]
 google = []
+# Feature for integration tests that require network access and model downloads
+integration-tests = []
