@@ -429,16 +429,20 @@ pub async fn run(
     )
     .await
     .context("Could not create backend")?;
-    backend
-        .health()
-        .await
-        .context("Model backend is not healthy")?;
+    if matches!(model_kind, ModelKind::ListwiseReranker) {
+        tracing::info!("Skipping health check and warmup for listwise reranker backend");
+    } else {
+        backend
+            .health()
+            .await
+            .context("Model backend is not healthy")?;
 
-    tracing::info!("Warming up model");
-    backend
-        .warmup(max_input_length, max_batch_tokens, max_batch_requests)
-        .await
-        .context("Model backend is not healthy")?;
+        tracing::info!("Warming up model");
+        backend
+            .warmup(max_input_length, max_batch_tokens, max_batch_requests)
+            .await
+            .context("Model backend is not healthy")?;
+    }
 
     let max_batch_requests = backend
         .max_batch_size

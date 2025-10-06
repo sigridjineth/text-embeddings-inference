@@ -33,7 +33,7 @@ impl LbnlReranker {
         })
     }
 
-    pub fn forward(&self, input: &ListwiseBlockInput) -> anyhow::Result<ListwiseBlockOutput> {
+    pub fn forward(&self, input: &ListwiseBlockInput) -> CResult<ListwiseBlockOutput> {
         let t = input.input_ids.len();
         let ids = Tensor::from_vec(input.input_ids.clone(), (1, t), &self.device)?;
 
@@ -58,24 +58,28 @@ impl LbnlReranker {
         };
 
         // Find special token positions
-        let mut doc_pos = Vec::with_capacity(input.doc_count);
         let mut rerank_pos = None;
+        let mut doc_token_positions = Vec::with_capacity(input.doc_count);
+
         for (i, &tid) in input.input_ids.iter().enumerate() {
             if tid == input.embed_token_id {
-                doc_pos.push(i);
+                doc_token_positions.push(i.saturating_sub(1));
             }
             if tid == input.rerank_token_id {
                 rerank_pos = Some(i);
             }
         }
-        let qpos = rerank_pos.ok_or_else(|| anyhow::anyhow!("No rerank token found"))?;
+        let qpos = match rerank_pos {
+            Some(pos) => pos,
+            None => candle::bail!("No rerank token found"),
+        };
 
         // Extract hidden states at positions → native dtype [1, H]
         let hq = hs.i((0, qpos, ..))?.unsqueeze(0)?;
 
         // Process documents: projector in native dtype, convert to F32 only for Vec extraction
-        let mut doc_embs = Vec::with_capacity(doc_pos.len());
-        for &p in &doc_pos {
+        let mut doc_embs = Vec::with_capacity(doc_token_positions.len());
+        for &p in &doc_token_positions {
             let hd = hs.i((0, p, ..))?.unsqueeze(0)?;
             // Projector operates in native dtype (BF16/FP16) - faster and more memory efficient
             let zd_native = self.projector.forward(&hd)?;
@@ -116,6 +120,13 @@ impl Model for LbnlReranker {
     // LBNL reranker doesn't support pairwise prediction
     fn predict(&self, _batch: Batch) -> candle::Result<Tensor> {
         candle::bail!("LBNL reranker only supports listwise reranking, not pairwise prediction")
+    }
+
+    fn embed_listwise_block(
+        &self,
+        input: ListwiseBlockInput,
+    ) -> candle::Result<ListwiseBlockOutput> {
+        self.forward(&input)
     }
 }
 

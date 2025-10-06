@@ -30,7 +30,8 @@ use serde::{de::Deserializer, Deserialize};
 use std::collections::HashMap;
 use std::path::Path;
 use text_embeddings_backend_core::{
-    Backend, BackendError, Batch, Embedding, Embeddings, ModelType, Predictions,
+    Backend, BackendError, Batch, Embedding, Embeddings, ListwiseBlockInput, ListwiseBlockOutput,
+    ModelType, Predictions,
 };
 
 /// This enum is needed to be able to differentiate between jina models that also use
@@ -637,6 +638,15 @@ impl Backend for CandleBackend {
         }
 
         Ok(predictions)
+    }
+
+    fn embed_listwise_block(
+        &self,
+        input: ListwiseBlockInput,
+    ) -> Result<ListwiseBlockOutput, BackendError> {
+        self.model
+            .embed_listwise_block(input)
+            .map_err(|e| BackendError::Inference(e.to_string()))
     }
 }
 

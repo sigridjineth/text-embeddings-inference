@@ -64,7 +64,7 @@ pub use mpnet::{MPNetConfig, MPNetModel};
 pub use nomic::{NomicBertModel, NomicConfig};
 pub use qwen2::Qwen2Config;
 pub use qwen3::{Qwen3Config, Qwen3Model};
-use text_embeddings_backend_core::Batch;
+use text_embeddings_backend_core::{Batch, ListwiseBlockInput, ListwiseBlockOutput};
 
 #[cfg(feature = "cuda")]
 pub use flash_bert::FlashBertModel;
@@ -105,5 +105,9 @@ pub(crate) trait Model {
 
     fn predict(&self, _batch: Batch) -> Result<Tensor> {
         candle::bail!("`predict` is not implemented for this model");
+    }
+
+    fn embed_listwise_block(&self, _input: ListwiseBlockInput) -> Result<ListwiseBlockOutput> {
+        candle::bail!("listwise reranking not supported for this model");
     }
 }
