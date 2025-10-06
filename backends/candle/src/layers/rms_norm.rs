@@ -10,10 +10,17 @@ pub struct RMSNorm {
 
 impl RMSNorm {
     pub fn load(vb: VarBuilder, hidden_size: usize, epsilon: f32) -> Result<Self> {
+        let weight = vb
+            .get(hidden_size, "weight")
+            .or_else(|_| vb.get(hidden_size, "gamma"))?;
+        let weight = if weight.dtype() == vb.dtype() {
+            weight
+        } else {
+            weight.to_dtype(vb.dtype())?
+        };
+
         Ok(Self {
-            weight: vb
-                .get(hidden_size, "weight")
-                .or_else(|_| vb.get(hidden_size, "gamma"))?,
+            weight,
             epsilon,
             span: tracing::span!(tracing::Level::TRACE, "rms-norm"),
         })

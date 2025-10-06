@@ -236,16 +236,32 @@ impl CandleBackend {
                     "Detected LBNL reranker (projector weights found); loading Candle integration"
                 );
 
-                let qwen3_model =
-                    Qwen3Model::load(vb.pp("model"), qwen3_cfg, model_type.clone()).s()?;
+                // CRITICAL FIX: Force F32 dtype for LBNL to prevent I64 matmul errors
+                // Create a new VarBuilder with F32 dtype to reload all weights correctly
+                tracing::info!(
+                    "Forcing F32 dtype for LBNL reranker (requested dtype: {:?})",
+                    dtype
+                );
+                let vb_f32 =
+                    if model_files.len() == 1 && model_files[0].extension().unwrap() == "bin" {
+                        VarBuilder::from_pth(&model_files[0], DType::F32, &device)
+                    } else {
+                        unsafe {
+                            VarBuilder::from_mmaped_safetensors(&model_files, DType::F32, &device)
+                        }
+                    }
+                    .s()?;
 
-                let projector_vb = vb.pp("projector");
+                let qwen3_model =
+                    Qwen3Model::load(vb_f32.pp("model"), qwen3_cfg, model_type.clone()).s()?;
+
+                let projector_vb = vb_f32.pp("projector");
                 let lbnl = LbnlReranker::new(
                     projector_vb,
                     qwen3_model,
                     device.clone(),
                     qwen3_cfg.hidden_size,
-                    dtype,
+                    DType::F32, // Always F32 for LBNL
                 )
                 .s()?;
 

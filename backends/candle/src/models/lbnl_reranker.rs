@@ -11,7 +11,6 @@ pub struct LbnlReranker {
     qwen3: Qwen3Model,
     projector: Projector,
     device: Device,
-    dtype: DType, // Track model's native dtype (BF16/FP16/F32)
 }
 
 impl LbnlReranker {
@@ -20,40 +19,47 @@ impl LbnlReranker {
         qwen3: Qwen3Model,
         device: Device,
         hidden_size: usize,
-        dtype: DType, // Model's loaded dtype
+        _dtype: DType, // Kept for API compatibility but unused (we always convert to F32)
     ) -> CResult<Self> {
-        // Load projector with same dtype as Qwen3 model to prevent mixed-precision issues
-        // VarBuilder already has the correct dtype from initialization
+        // Load projector weights from VarBuilder
+        // Note: We always convert hidden states to F32 before projector to avoid dtype issues
         let projector = Projector::load(vb, hidden_size)?;
         Ok(Self {
             qwen3,
             projector,
             device,
-            dtype,
         })
     }
 
     pub fn forward(&self, input: &ListwiseBlockInput) -> CResult<ListwiseBlockOutput> {
         let t = input.input_ids.len();
-        let ids = Tensor::from_vec(input.input_ids.clone(), (1, t), &self.device)?;
+
+        // CRITICAL FIX: Use I64 dtype for indices to match Candle's internal expectations
+        // Candle's embedding/mask/position pipeline expects I64 indices for stable dtype flow
+        // Using U32 can cause integer dtypes to leak into matmul boundaries
+        let ids = Tensor::from_vec(input.input_ids.clone(), (1, t), &self.device)?
+            .to_dtype(DType::I64)?;
 
         // Use attention mask from input (preserves left-padding structure from tokenizer)
         // Python reference: tokenizer creates mask with 0 for padding, 1 for real tokens
-        // Ignoring this causes padding tokens to be treated as real tokens!
-        let mask = Tensor::from_vec(input.attention_mask.clone(), (1, t), &self.device)?;
+        // I64 dtype ensures clean integer→float boundary at embedding layer
+        let mask = Tensor::from_vec(input.attention_mask.clone(), (1, t), &self.device)?
+            .to_dtype(DType::I64)?;
 
         // Use forward_with_tensors for hidden states extraction
         let hs = self.qwen3.forward_with_tensors(&ids, &mask)?;
 
-        // Verify dtype matches expectation
-        let hs = if hs.dtype() != self.dtype {
+        // CRITICAL FIX: Force conversion to F32 to prevent I64 dtype errors in projector matmul
+        // With I64 input indices, embeddings should output F32, but defensive cast ensures safety
+        // Projector only supports F32/F16/BF16 for matmul operations
+        let hs = if hs.dtype() != DType::F32 {
             tracing::warn!(
-                "Hidden states dtype mismatch: got {:?}, expected {:?}",
-                hs.dtype(),
-                self.dtype
+                "Hidden states dtype is {:?}, converting to F32 (this should not happen with I64 inputs)",
+                hs.dtype()
             );
-            hs.to_dtype(self.dtype)?
+            hs.to_dtype(DType::F32)?
         } else {
+            tracing::debug!("Hidden states dtype is F32 as expected");
             hs
         };
 
@@ -74,23 +80,35 @@ impl LbnlReranker {
             None => candle::bail!("No rerank token found"),
         };
 
-        // Extract hidden states at positions → native dtype [1, H]
-        let hq = hs.i((0, qpos, ..))?.unsqueeze(0)?;
+        // Extract hidden states at positions → F32 [1, H]
+        // Note: hs is already F32 from conversion above, but we keep .to_dtype for safety
+        let hq = hs.i((0, qpos, ..))?.to_dtype(DType::F32)?.unsqueeze(0)?;
 
-        // Process documents: projector in native dtype, convert to F32 only for Vec extraction
+        // Process documents: extract and pass through projector
         let mut doc_embs = Vec::with_capacity(doc_token_positions.len());
         for &p in &doc_token_positions {
-            let hd = hs.i((0, p, ..))?.unsqueeze(0)?;
-            // Projector operates in native dtype (BF16/FP16) - faster and more memory efficient
-            let zd_native = self.projector.forward(&hd)?;
-            // Convert to F32 only for Vec<f32> extraction
-            let zd_f32 = zd_native.to_dtype(DType::F32)?;
+            // Extract and ensure F32 dtype before projector
+            let hd = hs.i((0, p, ..))?.to_dtype(DType::F32)?.unsqueeze(0)?;
+
+            // Pass through projector (projector weights should be F32 compatible)
+            let zd = self.projector.forward(&hd)?;
+
+            // Convert output to F32 if needed and extract as Vec
+            let zd_f32 = if zd.dtype() != DType::F32 {
+                zd.to_dtype(DType::F32)?
+            } else {
+                zd
+            };
             doc_embs.push(zd_f32.to_vec2::<f32>()?.remove(0));
         }
 
-        // Process query: same dtype policy
-        let zq_native = self.projector.forward(&hq)?;
-        let zq_f32 = zq_native.to_dtype(DType::F32)?;
+        // Process query: same approach
+        let zq = self.projector.forward(&hq)?;
+        let zq_f32 = if zq.dtype() != DType::F32 {
+            zq.to_dtype(DType::F32)?
+        } else {
+            zq
+        };
         let zq_vec = zq_f32.to_vec2::<f32>()?.remove(0);
 
         // Important normalization policy (modeling.py parity):

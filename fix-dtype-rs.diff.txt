@@ -1,0 +1,434 @@
+diff --git a/backends/candle/src/layers/projector.rs b/backends/candle/src/layers/projector.rs
+index ffb0cb4..db7b463 100644
+--- a/backends/candle/src/layers/projector.rs
++++ b/backends/candle/src/layers/projector.rs
+@@ -2,13 +2,13 @@
+ //!
+ //! Architecture: Linear(hidden_size → hidden_size/2, bias=False) → ReLU → Linear(hidden_size/2 → 512, bias=False)
+ 
+-use candle::{Result, Tensor};
+-use candle_nn::{Linear, Module, VarBuilder};
++use candle::{DType, Result, Tensor};
++use candle_nn::VarBuilder;
+ 
+ #[derive(Debug)]
+ pub struct Projector {
+-    fc1: Linear,
+-    fc2: Linear,
++    w1: Tensor,
++    w2: Tensor,
+ }
+ 
+ impl Projector {
+@@ -22,28 +22,43 @@ impl Projector {
+         let latent_size = hidden_size / 2; // modeling.py: hidden_size → hidden_size/2 → 512
+ 
+         // VarBuilder paths map to safetensors keys:
+-        // VarBuilder is already scoped to "projector" from lib.rs:240
++        // VarBuilder is already scoped to "projector" from lib.rs:242
+         // So vb.pp("0") → "projector.0.weight" (not vb.pp("projector").pp("0"))
+         let w1 = vb.pp("0").get((latent_size, hidden_size), "weight")?;
+         let w2 = vb.pp("2").get((512, latent_size), "weight")?;
+ 
++        // CRITICAL FIX: ensure projector weights are materialised as F32 on the target device.
++        let w1 = w1
++            .to_device(vb.device())?
++            .to_dtype(DType::F32)?
++            .contiguous()?;
++        let w2 = w2
++            .to_device(vb.device())?
++            .to_dtype(DType::F32)?
++            .contiguous()?;
++
+         // Verify projector has no bias (modeling.py: bias=False)
+-        // Check existence by attempting to load - minimal overhead
+-        if vb.pp("0").get((latent_size,), "bias").is_ok() || vb.pp("2").get((512,), "bias").is_ok()
+-        {
++        // Check existence using contains_tensor to avoid partial loads.
++        if vb.pp("0").contains_tensor("bias") || vb.pp("2").contains_tensor("bias") {
+             candle::bail!(
+                 "Projector must be bias-free (bias=False per Jina v3 spec). \
+                  This model may not be compatible. Verify weights or use --reranker-mode pairwise"
+             );
+         }
+ 
+-        let fc1 = Linear::new(w1, None);
+-        let fc2 = Linear::new(w2, None);
+-        Ok(Self { fc1, fc2 })
++        Ok(Self { w1, w2 })
+     }
+ 
+     pub fn forward(&self, hidden: &Tensor) -> Result<Tensor> {
+-        let x = self.fc1.forward(hidden)?.relu()?;
+-        self.fc2.forward(&x)
++        // All projector math happens in F32 to satisfy Candle's matmul requirements.
++        let hidden = if hidden.dtype() == DType::F32 {
++            hidden.clone()
++        } else {
++            hidden.to_dtype(DType::F32)?
++        };
++
++        let hidden = hidden.contiguous()?;
++        let h1 = hidden.matmul(&self.w1.t()?)?.relu()?;
++        h1.matmul(&self.w2.t()?)
+     }
+ }
+diff --git a/backends/candle/src/layers/rms_norm.rs b/backends/candle/src/layers/rms_norm.rs
+index e7dab64..0bcce45 100644
+--- a/backends/candle/src/layers/rms_norm.rs
++++ b/backends/candle/src/layers/rms_norm.rs
+@@ -10,10 +10,17 @@ pub struct RMSNorm {
+ 
+ impl RMSNorm {
+     pub fn load(vb: VarBuilder, hidden_size: usize, epsilon: f32) -> Result<Self> {
++        let weight = vb
++            .get(hidden_size, "weight")
++            .or_else(|_| vb.get(hidden_size, "gamma"))?;
++        let weight = if weight.dtype() == vb.dtype() {
++            weight
++        } else {
++            weight.to_dtype(vb.dtype())?
++        };
++
+         Ok(Self {
+-            weight: vb
+-                .get(hidden_size, "weight")
+-                .or_else(|_| vb.get(hidden_size, "gamma"))?,
++            weight,
+             epsilon,
+             span: tracing::span!(tracing::Level::TRACE, "rms-norm"),
+         })
+diff --git a/backends/candle/src/lib.rs b/backends/candle/src/lib.rs
+index 19e0a94..92422bc 100644
+--- a/backends/candle/src/lib.rs
++++ b/backends/candle/src/lib.rs
+@@ -236,16 +236,32 @@ impl CandleBackend {
+                     "Detected LBNL reranker (projector weights found); loading Candle integration"
+                 );
+ 
++                // CRITICAL FIX: Force F32 dtype for LBNL to prevent I64 matmul errors
++                // Create a new VarBuilder with F32 dtype to reload all weights correctly
++                tracing::info!(
++                    "Forcing F32 dtype for LBNL reranker (requested dtype: {:?})",
++                    dtype
++                );
++                let vb_f32 =
++                    if model_files.len() == 1 && model_files[0].extension().unwrap() == "bin" {
++                        VarBuilder::from_pth(&model_files[0], DType::F32, &device)
++                    } else {
++                        unsafe {
++                            VarBuilder::from_mmaped_safetensors(&model_files, DType::F32, &device)
++                        }
++                    }
++                    .s()?;
++
+                 let qwen3_model =
+-                    Qwen3Model::load(vb.pp("model"), qwen3_cfg, model_type.clone()).s()?;
++                    Qwen3Model::load(vb_f32.pp("model"), qwen3_cfg, model_type.clone()).s()?;
+ 
+-                let projector_vb = vb.pp("projector");
++                let projector_vb = vb_f32.pp("projector");
+                 let lbnl = LbnlReranker::new(
+                     projector_vb,
+                     qwen3_model,
+                     device.clone(),
+                     qwen3_cfg.hidden_size,
+-                    dtype,
++                    DType::F32, // Always F32 for LBNL
+                 )
+                 .s()?;
+ 
+diff --git a/backends/candle/src/models/lbnl_reranker.rs b/backends/candle/src/models/lbnl_reranker.rs
+index 3e69a21..99012d1 100644
+--- a/backends/candle/src/models/lbnl_reranker.rs
++++ b/backends/candle/src/models/lbnl_reranker.rs
+@@ -11,7 +11,6 @@ pub struct LbnlReranker {
+     qwen3: Qwen3Model,
+     projector: Projector,
+     device: Device,
+-    dtype: DType, // Track model's native dtype (BF16/FP16/F32)
+ }
+ 
+ impl LbnlReranker {
+@@ -20,40 +19,47 @@ impl LbnlReranker {
+         qwen3: Qwen3Model,
+         device: Device,
+         hidden_size: usize,
+-        dtype: DType, // Model's loaded dtype
++        _dtype: DType, // Kept for API compatibility but unused (we always convert to F32)
+     ) -> CResult<Self> {
+-        // Load projector with same dtype as Qwen3 model to prevent mixed-precision issues
+-        // VarBuilder already has the correct dtype from initialization
++        // Load projector weights from VarBuilder
++        // Note: We always convert hidden states to F32 before projector to avoid dtype issues
+         let projector = Projector::load(vb, hidden_size)?;
+         Ok(Self {
+             qwen3,
+             projector,
+             device,
+-            dtype,
+         })
+     }
+ 
+     pub fn forward(&self, input: &ListwiseBlockInput) -> CResult<ListwiseBlockOutput> {
+         let t = input.input_ids.len();
+-        let ids = Tensor::from_vec(input.input_ids.clone(), (1, t), &self.device)?;
++
++        // CRITICAL FIX: Use I64 dtype for indices to match Candle's internal expectations
++        // Candle's embedding/mask/position pipeline expects I64 indices for stable dtype flow
++        // Using U32 can cause integer dtypes to leak into matmul boundaries
++        let ids = Tensor::from_vec(input.input_ids.clone(), (1, t), &self.device)?
++            .to_dtype(DType::I64)?;
+ 
+         // Use attention mask from input (preserves left-padding structure from tokenizer)
+         // Python reference: tokenizer creates mask with 0 for padding, 1 for real tokens
+-        // Ignoring this causes padding tokens to be treated as real tokens!
+-        let mask = Tensor::from_vec(input.attention_mask.clone(), (1, t), &self.device)?;
++        // I64 dtype ensures clean integer→float boundary at embedding layer
++        let mask = Tensor::from_vec(input.attention_mask.clone(), (1, t), &self.device)?
++            .to_dtype(DType::I64)?;
+ 
+         // Use forward_with_tensors for hidden states extraction
+         let hs = self.qwen3.forward_with_tensors(&ids, &mask)?;
+ 
+-        // Verify dtype matches expectation
+-        let hs = if hs.dtype() != self.dtype {
++        // CRITICAL FIX: Force conversion to F32 to prevent I64 dtype errors in projector matmul
++        // With I64 input indices, embeddings should output F32, but defensive cast ensures safety
++        // Projector only supports F32/F16/BF16 for matmul operations
++        let hs = if hs.dtype() != DType::F32 {
+             tracing::warn!(
+-                "Hidden states dtype mismatch: got {:?}, expected {:?}",
+-                hs.dtype(),
+-                self.dtype
++                "Hidden states dtype is {:?}, converting to F32 (this should not happen with I64 inputs)",
++                hs.dtype()
+             );
+-            hs.to_dtype(self.dtype)?
++            hs.to_dtype(DType::F32)?
+         } else {
++            tracing::debug!("Hidden states dtype is F32 as expected");
+             hs
+         };
+ 
+@@ -74,23 +80,35 @@ impl LbnlReranker {
+             None => candle::bail!("No rerank token found"),
+         };
+ 
+-        // Extract hidden states at positions → native dtype [1, H]
+-        let hq = hs.i((0, qpos, ..))?.unsqueeze(0)?;
++        // Extract hidden states at positions → F32 [1, H]
++        // Note: hs is already F32 from conversion above, but we keep .to_dtype for safety
++        let hq = hs.i((0, qpos, ..))?.to_dtype(DType::F32)?.unsqueeze(0)?;
+ 
+-        // Process documents: projector in native dtype, convert to F32 only for Vec extraction
++        // Process documents: extract and pass through projector
+         let mut doc_embs = Vec::with_capacity(doc_token_positions.len());
+         for &p in &doc_token_positions {
+-            let hd = hs.i((0, p, ..))?.unsqueeze(0)?;
+-            // Projector operates in native dtype (BF16/FP16) - faster and more memory efficient
+-            let zd_native = self.projector.forward(&hd)?;
+-            // Convert to F32 only for Vec<f32> extraction
+-            let zd_f32 = zd_native.to_dtype(DType::F32)?;
++            // Extract and ensure F32 dtype before projector
++            let hd = hs.i((0, p, ..))?.to_dtype(DType::F32)?.unsqueeze(0)?;
++
++            // Pass through projector (projector weights should be F32 compatible)
++            let zd = self.projector.forward(&hd)?;
++
++            // Convert output to F32 if needed and extract as Vec
++            let zd_f32 = if zd.dtype() != DType::F32 {
++                zd.to_dtype(DType::F32)?
++            } else {
++                zd
++            };
+             doc_embs.push(zd_f32.to_vec2::<f32>()?.remove(0));
+         }
+ 
+-        // Process query: same dtype policy
+-        let zq_native = self.projector.forward(&hq)?;
+-        let zq_f32 = zq_native.to_dtype(DType::F32)?;
++        // Process query: same approach
++        let zq = self.projector.forward(&hq)?;
++        let zq_f32 = if zq.dtype() != DType::F32 {
++            zq.to_dtype(DType::F32)?
++        } else {
++            zq
++        };
+         let zq_vec = zq_f32.to_vec2::<f32>()?.remove(0);
+ 
+         // Important normalization policy (modeling.py parity):
+diff --git a/backends/candle/src/models/qwen3.rs b/backends/candle/src/models/qwen3.rs
+index 7fdd0b0..7f2b451 100644
+--- a/backends/candle/src/models/qwen3.rs
++++ b/backends/candle/src/models/qwen3.rs
+@@ -7,6 +7,14 @@ use candle_nn::{Embedding, Module, VarBuilder};
+ use serde::Deserialize;
+ use text_embeddings_backend_core::{Batch, ModelType, Pool};
+ 
++fn to_dtype(tensor: Tensor, dtype: DType) -> Result<Tensor> {
++    if tensor.dtype() == dtype {
++        Ok(tensor)
++    } else {
++        tensor.to_dtype(dtype)
++    }
++}
++
+ #[derive(Debug, Clone, PartialEq, Deserialize)]
+ pub struct Qwen3Config {
+     pub attention_bias: bool,
+@@ -56,51 +64,68 @@ impl Qwen3Attention {
+         let num_key_value_heads = config.num_key_value_heads;
+         let hidden_size = config.hidden_size;
+ 
+-        let query_weight = vb.pp("q_proj").get(
+-            (num_attention_heads * attention_head_size, hidden_size),
+-            "weight",
++        let dtype = vb.dtype();
++
++        let query_weight = to_dtype(
++            vb.pp("q_proj").get(
++                (num_attention_heads * attention_head_size, hidden_size),
++                "weight",
++            )?,
++            dtype,
+         )?;
+         let query_bias = if config.attention_bias {
+-            Some(
++            Some(to_dtype(
+                 vb.pp("q_proj")
+                     .get(num_attention_heads * attention_head_size, "bias")?,
+-            )
++                dtype,
++            )?)
+         } else {
+             None
+         };
+         let q_proj = Linear::new(query_weight, query_bias, None);
+ 
+-        let key_weight = vb.pp("k_proj").get(
+-            (num_key_value_heads * attention_head_size, hidden_size),
+-            "weight",
++        let key_weight = to_dtype(
++            vb.pp("k_proj").get(
++                (num_key_value_heads * attention_head_size, hidden_size),
++                "weight",
++            )?,
++            dtype,
+         )?;
+         let key_bias = if config.attention_bias {
+-            Some(
++            Some(to_dtype(
+                 vb.pp("k_proj")
+                     .get(num_key_value_heads * attention_head_size, "bias")?,
+-            )
++                dtype,
++            )?)
+         } else {
+             None
+         };
+         let k_proj = Linear::new(key_weight, key_bias, None);
+ 
+-        let value_weight = vb.pp("v_proj").get(
+-            (num_key_value_heads * attention_head_size, hidden_size),
+-            "weight",
++        let value_weight = to_dtype(
++            vb.pp("v_proj").get(
++                (num_key_value_heads * attention_head_size, hidden_size),
++                "weight",
++            )?,
++            dtype,
+         )?;
+         let value_bias = if config.attention_bias {
+-            Some(
++            Some(to_dtype(
+                 vb.pp("v_proj")
+                     .get(num_key_value_heads * attention_head_size, "bias")?,
+-            )
++                dtype,
++            )?)
+         } else {
+             None
+         };
+         let v_proj = Linear::new(value_weight, value_bias, None);
+ 
+-        let o_proj_weight = vb.pp("o_proj").get(
+-            (hidden_size, num_attention_heads * attention_head_size),
+-            "weight",
++        let o_proj_weight = to_dtype(
++            vb.pp("o_proj").get(
++                (hidden_size, num_attention_heads * attention_head_size),
++                "weight",
++            )?,
++            dtype,
+         )?;
+         let o_proj = Linear::new(o_proj_weight, None, None);
+ 
+@@ -275,20 +300,28 @@ impl Qwen3MLP {
+     pub fn load(vb: VarBuilder, config: &Qwen3Config) -> Result<Self> {
+         let intermediate_size = config.intermediate_size;
+ 
+-        let gate_proj_weight = vb
+-            .pp("gate_proj")
+-            .get((intermediate_size, config.hidden_size), "weight")?;
++        let dtype = vb.dtype();
+ 
+-        let up_proj_weight = vb
+-            .pp("up_proj")
+-            .get((intermediate_size, config.hidden_size), "weight")?;
++        let gate_proj_weight = to_dtype(
++            vb.pp("gate_proj")
++                .get((intermediate_size, config.hidden_size), "weight")?,
++            dtype,
++        )?;
++
++        let up_proj_weight = to_dtype(
++            vb.pp("up_proj")
++                .get((intermediate_size, config.hidden_size), "weight")?,
++            dtype,
++        )?;
+ 
+         let gate_up_proj_weight = Tensor::cat(&[&gate_proj_weight, &up_proj_weight], 0)?;
+         let gate_up_proj = Linear::new(gate_up_proj_weight, None, None);
+ 
+-        let down_proj_weight = vb
+-            .pp("down_proj")
+-            .get((config.hidden_size, intermediate_size), "weight")?;
++        let down_proj_weight = to_dtype(
++            vb.pp("down_proj")
++                .get((config.hidden_size, intermediate_size), "weight")?,
++            dtype,
++        )?;
+         let down_proj = Linear::new(down_proj_weight, None, None);
+ 
+         Ok(Self {
+@@ -409,8 +442,11 @@ impl Qwen3Model {
+         };
+ 
+         let embeddings = Embedding::new(
+-            vb.pp("embed_tokens")
+-                .get((config.vocab_size, config.hidden_size), "weight")?,
++            to_dtype(
++                vb.pp("embed_tokens")
++                    .get((config.vocab_size, config.hidden_size), "weight")?,
++                vb.dtype(),
++            )?,
+             config.hidden_size,
+         );
+ 
+@@ -481,6 +517,15 @@ impl Qwen3Model {
+ 
+         let mut hidden_states = self.embeddings.forward(input_ids)?;
+ 
++        // CRITICAL FIX: Ensure embeddings output is in the model dtype (F32/F16/BF16).
++        // Defensive cast so that downstream matmul calls never see integer tensors, which Candle
++        // rejects for linear algebra.
++        hidden_states = if hidden_states.dtype() != self.dtype {
++            hidden_states.to_dtype(self.dtype)?
++        } else {
++            hidden_states
++        };
++
+         let cos = self
+             .rotary_cache
+             .0

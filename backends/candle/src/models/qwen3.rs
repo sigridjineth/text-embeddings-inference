@@ -7,6 +7,14 @@ use candle_nn::{Embedding, Module, VarBuilder};
 use serde::Deserialize;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
+fn to_dtype(tensor: Tensor, dtype: DType) -> Result<Tensor> {
+    if tensor.dtype() == dtype {
+        Ok(tensor)
+    } else {
+        tensor.to_dtype(dtype)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Qwen3Config {
     pub attention_bias: bool,
@@ -56,51 +64,68 @@ impl Qwen3Attention {
         let num_key_value_heads = config.num_key_value_heads;
         let hidden_size = config.hidden_size;
 
-        let query_weight = vb.pp("q_proj").get(
-            (num_attention_heads * attention_head_size, hidden_size),
-            "weight",
+        let dtype = vb.dtype();
+
+        let query_weight = to_dtype(
+            vb.pp("q_proj").get(
+                (num_attention_heads * attention_head_size, hidden_size),
+                "weight",
+            )?,
+            dtype,
         )?;
         let query_bias = if config.attention_bias {
-            Some(
+            Some(to_dtype(
                 vb.pp("q_proj")
                     .get(num_attention_heads * attention_head_size, "bias")?,
-            )
+                dtype,
+            )?)
         } else {
             None
         };
         let q_proj = Linear::new(query_weight, query_bias, None);
 
-        let key_weight = vb.pp("k_proj").get(
-            (num_key_value_heads * attention_head_size, hidden_size),
-            "weight",
+        let key_weight = to_dtype(
+            vb.pp("k_proj").get(
+                (num_key_value_heads * attention_head_size, hidden_size),
+                "weight",
+            )?,
+            dtype,
         )?;
         let key_bias = if config.attention_bias {
-            Some(
+            Some(to_dtype(
                 vb.pp("k_proj")
                     .get(num_key_value_heads * attention_head_size, "bias")?,
-            )
+                dtype,
+            )?)
         } else {
             None
         };
         let k_proj = Linear::new(key_weight, key_bias, None);
 
-        let value_weight = vb.pp("v_proj").get(
-            (num_key_value_heads * attention_head_size, hidden_size),
-            "weight",
+        let value_weight = to_dtype(
+            vb.pp("v_proj").get(
+                (num_key_value_heads * attention_head_size, hidden_size),
+                "weight",
+            )?,
+            dtype,
         )?;
         let value_bias = if config.attention_bias {
-            Some(
+            Some(to_dtype(
                 vb.pp("v_proj")
                     .get(num_key_value_heads * attention_head_size, "bias")?,
-            )
+                dtype,
+            )?)
         } else {
             None
         };
         let v_proj = Linear::new(value_weight, value_bias, None);
 
-        let o_proj_weight = vb.pp("o_proj").get(
-            (hidden_size, num_attention_heads * attention_head_size),
-            "weight",
+        let o_proj_weight = to_dtype(
+            vb.pp("o_proj").get(
+                (hidden_size, num_attention_heads * attention_head_size),
+                "weight",
+            )?,
+            dtype,
         )?;
         let o_proj = Linear::new(o_proj_weight, None, None);
 
@@ -275,20 +300,28 @@ impl Qwen3MLP {
     pub fn load(vb: VarBuilder, config: &Qwen3Config) -> Result<Self> {
         let intermediate_size = config.intermediate_size;
 
-        let gate_proj_weight = vb
-            .pp("gate_proj")
-            .get((intermediate_size, config.hidden_size), "weight")?;
+        let dtype = vb.dtype();
 
-        let up_proj_weight = vb
-            .pp("up_proj")
-            .get((intermediate_size, config.hidden_size), "weight")?;
+        let gate_proj_weight = to_dtype(
+            vb.pp("gate_proj")
+                .get((intermediate_size, config.hidden_size), "weight")?,
+            dtype,
+        )?;
+
+        let up_proj_weight = to_dtype(
+            vb.pp("up_proj")
+                .get((intermediate_size, config.hidden_size), "weight")?,
+            dtype,
+        )?;
 
         let gate_up_proj_weight = Tensor::cat(&[&gate_proj_weight, &up_proj_weight], 0)?;
         let gate_up_proj = Linear::new(gate_up_proj_weight, None, None);
 
-        let down_proj_weight = vb
-            .pp("down_proj")
-            .get((config.hidden_size, intermediate_size), "weight")?;
+        let down_proj_weight = to_dtype(
+            vb.pp("down_proj")
+                .get((config.hidden_size, intermediate_size), "weight")?,
+            dtype,
+        )?;
         let down_proj = Linear::new(down_proj_weight, None, None);
 
         Ok(Self {
@@ -409,8 +442,11 @@ impl Qwen3Model {
         };
 
         let embeddings = Embedding::new(
-            vb.pp("embed_tokens")
-                .get((config.vocab_size, config.hidden_size), "weight")?,
+            to_dtype(
+                vb.pp("embed_tokens")
+                    .get((config.vocab_size, config.hidden_size), "weight")?,
+                vb.dtype(),
+            )?,
             config.hidden_size,
         );
 
@@ -481,6 +517,15 @@ impl Qwen3Model {
 
         let mut hidden_states = self.embeddings.forward(input_ids)?;
 
+        // CRITICAL FIX: Ensure embeddings output is in the model dtype (F32/F16/BF16).
+        // Defensive cast so that downstream matmul calls never see integer tensors, which Candle
+        // rejects for linear algebra.
+        hidden_states = if hidden_states.dtype() != self.dtype {
+            hidden_states.to_dtype(self.dtype)?
+        } else {
+            hidden_states
+        };
+
         let cos = self
             .rotary_cache
             .0
@@ -513,19 +558,24 @@ impl Qwen3Model {
         input_ids: &Tensor,
         attention_mask: &Tensor,
     ) -> Result<Tensor> {
-        let input_ids = input_ids.to_device(&self.device)?;
-        let attention_mask = attention_mask.to_device(&self.device)?;
+        // CRITICAL: Force I64 dtype for all indexing tensors
+        // This prevents integer dtype leakage into matmul operations
+        let input_ids = input_ids.to_device(&self.device)?.to_dtype(DType::I64)?;
+        let attention_mask = attention_mask
+            .to_device(&self.device)?
+            .to_dtype(DType::I64)?;
 
         let (batch_size, seq_len) = input_ids.dims2()?;
 
         // Create position_ids from attention_mask for left-padding.
         // Padded tokens get position 0, and actual tokens get incremental positions.
+        // CRITICAL: Keep position_ids as I64 (not U32) to prevent dtype mixing
         let position_ids = {
             let i64_mask = attention_mask.to_dtype(DType::I64)?;
             let one = Tensor::ones_like(&i64_mask)?;
             (i64_mask.cumsum(D::Minus1)? - one)?
                 .broadcast_mul(&i64_mask)?
-                .to_dtype(DType::U32)?
+                .to_dtype(DType::I64)? // Keep as I64, not U32!
         };
 
         // Create attention_bias from attention_mask
