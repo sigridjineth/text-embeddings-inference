@@ -2,13 +2,29 @@
 //!
 //! Test Coverage Strategy (Pragmatic Approach):
 //!
-//! ✅ **Level 1: Component Integration** - Tests that verify exports and math utilities work
-//! ✅ **Level 2: Handler Validation Logic** - Tests input validation and error codes (THIS FILE)
-//! ⏸️ **Level 3: Full E2E with Models** - Feature-gated tests requiring model files (#[ignore])
+//! ✅ **Level 1: Component Integration** (6 tests) - Unit-level tests of math utilities and types
+//! ✅ **Level 2: Handler Validation Logic** (2 tests) - Unit-level tests of config and error types
+//! ⏸️ **Level 3: Full E2E with Models** (5 tests, #[ignore]) - Would test actual handler execution
 //!
-//! This approach tests what we CAN test without complex Infer mocking, while being
-//! honest about test coverage. Full handler integration with actual embeddings requires
-//! model files and is covered by the #[ignore] tests below.
+//! **IMPORTANT LIMITATIONS:**
+//! - Levels 1 & 2 are UNIT-level tests - they do NOT call `rerank_listwise()` handler
+//! - Actual handler execution (HTTP → rerank_listwise → Infer → response) requires:
+//!   * Either: Complex Infer/Backend mocking (high maintenance burden)
+//!   * Or: Real model files (jina-reranker-v3) - covered in Level 3 #[ignore] tests
+//!
+//! **What IS tested:**
+//! - Math utilities work correctly (cosine similarity, weighted average, etc.)
+//! - Strategy types are usable (RerankMode, RerankOrdering)
+//! - Configuration limits exist and are correct
+//! - Error types are defined
+//!
+//! **What is NOT tested:**
+//! - Actual `rerank_listwise()` handler execution
+//! - AppState construction
+//! - Infer::embed_listwise_block() integration
+//! - Response header generation (headers are implemented, but not tested here)
+//!
+//! This pragmatic approach avoids over-engineering while being honest about coverage.
 
 use text_embeddings_router::listwise::math::{
     add_scaled, cosine_similarity, normalize, normalize_new, weighted_average,

@@ -186,21 +186,25 @@ cargo build -p text-embeddings-backend-candle
       * Strategy types: RerankMode, RerankOrdering construction
       * Edge cases: zero-vectors, dimension mismatches, stability
       * Multi-block query embedding simulation
+      * **These are unit-level tests** - verify components work independently
     - **✅ Level 2: Handler Validation Logic** (2 tests)
       * Configuration validation (max docs, doc size limits)
       * Error types (validation, backend, tokenizer)
-      * Tests what we CAN test without complex Infer/Backend mocking
+      * **IMPORTANT: These are still unit-level tests** - they verify types and configs exist, but do NOT call `rerank_listwise()` handler
+      * Testing actual handler flow requires mocking Infer/Backend (maintenance burden) or models (Level 3)
     - **⏸️ Level 3: Full E2E with Models** (5 tests, #[ignore])
       * Feature-gated tests requiring jina-reranker-v3 model files
-      * Test complete handler flow with HTTP requests
+      * **These WOULD test the actual handler flow** - HTTP requests, rerank_listwise() execution, response validation
       * Validate all x-tei-* headers and response structure
+      * Currently unimplemented (unimplemented!() stubs)
       * Run with: `cargo test --features integration-tests -- --ignored`
-  - **Honest Test Coverage Statement:**
-    - ✅ **Component integration**: Math, types, edge cases thoroughly tested
-    - ✅ **Handler configuration**: Validation limits and error types tested
-    - ✅ **Response headers**: All x-tei-* headers implemented and documented
-    - ⏸️ **Full handler E2E**: Requires models (Infer/Backend mocking creates maintenance burden)
-    - 📝 **Pragmatic approach**: Tests what we CAN test without over-engineering
+  - **Explicit Test Coverage Statement:**
+    - ✅ **Component integration (Level 1)**: Math, types, edge cases thoroughly tested at unit level
+    - ✅ **Handler types/config (Level 2)**: Configuration limits and error types verified at unit level
+    - ✅ **Response headers**: All x-tei-* headers implemented in handler code
+    - ⏸️ **Actual handler execution (Level 3)**: Requires models OR complex mocking (pragmatically deferred)
+    - 📝 **What's NOT tested**: `rerank_listwise()` handler execution, AppState construction, Infer integration flow
+    - 📝 **Follow-up opportunity**: Add mock-based handler tests if complexity becomes justified
   - **Files Modified:**
     1. `router/Cargo.toml` - Added tower-http "limit" feature + integration-tests flag
     2. `router/src/lib.rs` - Fixed payload limit parameter flow
