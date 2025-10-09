@@ -513,17 +513,36 @@ impl Qwen3Model {
         position_ids: &Tensor,
         attention_bias: Option<&Tensor>,
     ) -> Result<Tensor> {
+        tracing::info!("--- Entering forward_layers ---");
+        tracing::info!("Received input_ids dtype: {:?}", input_ids.dtype());
+        tracing::info!("Received position_ids dtype: {:?}", position_ids.dtype());
+        if let Some(bias) = attention_bias {
+            tracing::info!("Received attention_bias dtype: {:?}", bias.dtype());
+        }
+
         let (batch_size, max_length) = input_ids.dims2()?;
 
-        let i64_ids = input_ids.to_dtype(DType::I64)?;
-        let mut hidden_states = self.embeddings.forward(&i64_ids)?;
+        let mut hidden_states = self.embeddings.forward(input_ids)?;
+        tracing::info!(
+            "hidden_states dtype after embedding: {:?}",
+            hidden_states.dtype()
+        );
 
         // Ensure embeddings output is in the model dtype (F32/F16/BF16).
         hidden_states = if hidden_states.dtype() != self.dtype {
+            tracing::warn!(
+                "Casting hidden_states from {:?} to {:?}",
+                hidden_states.dtype(),
+                self.dtype
+            );
             hidden_states.to_dtype(self.dtype)?
         } else {
             hidden_states
         };
+        tracing::info!(
+            "hidden_states dtype after cast: {:?}",
+            hidden_states.dtype()
+        );
 
         let cos = self
             .rotary_cache
@@ -536,12 +555,25 @@ impl Qwen3Model {
 
         let cos = cos.reshape((batch_size, 1, max_length, self.rotary_dim))?;
         let sin = sin.reshape((batch_size, 1, max_length, self.rotary_dim))?;
+        tracing::info!("cos dtype: {:?}, sin dtype: {:?}", cos.dtype(), sin.dtype());
 
-        for layer in &self.layers {
+        for (i, layer) in self.layers.iter().enumerate() {
+            tracing::info!("--- Entering layer {} ---", i);
+            tracing::info!(
+                "hidden_states dtype before layer {}: {:?}",
+                i,
+                hidden_states.dtype()
+            );
             hidden_states = layer.forward(&hidden_states, attention_bias, &cos, &sin)?;
+            tracing::info!(
+                "hidden_states dtype after layer {}: {:?}",
+                i,
+                hidden_states.dtype()
+            );
         }
 
         let (outputs, _) = self.norm.forward(&hidden_states, None)?;
+        tracing::info!("Final output dtype before return: {:?}", outputs.dtype());
         Ok(outputs)
     }
 
@@ -557,17 +589,25 @@ impl Qwen3Model {
         input_ids: &Tensor,
         attention_mask: &Tensor,
     ) -> Result<Tensor> {
+        tracing::info!("--- Entering forward_with_tensors ---");
+        tracing::info!("Initial input_ids dtype: {:?}", input_ids.dtype());
+        tracing::info!("Initial attention_mask dtype: {:?}", attention_mask.dtype());
+
         let input_ids = input_ids.to_device(&self.device)?;
         let attention_mask = attention_mask.to_device(&self.device)?;
 
         let (batch_size, seq_len) = input_ids.dims2()?;
 
-        // Create position_ids from attention_mask for left-padding.
         let position_ids = {
-            // Calculation happens in the dtype of attention_mask (U32)
-            let one = Tensor::ones_like(&attention_mask)?;
-            (attention_mask.cumsum(D::Minus1)? - one)?.broadcast_mul(&attention_mask)?
+            // cumsum on integer types is not supported by the backend for this model.
+            // Cast to f32, perform the calculation, and then cast back to u32.
+            let float_mask = attention_mask.to_dtype(DType::F32)?;
+            let one = Tensor::ones_like(&float_mask)?;
+            let cumsum_mask = (float_mask.cumsum(D::Minus1)? - one)?;
+            let pos_ids_float = cumsum_mask.broadcast_mul(&float_mask)?;
+            pos_ids_float.to_dtype(DType::U32)?
         };
+        tracing::info!("Created position_ids dtype: {:?}", position_ids.dtype());
 
         // Create attention_bias from attention_mask
         let attention_bias = {
@@ -586,7 +626,8 @@ impl Qwen3Model {
 
             // Use a boolean mask for where_cond for type safety.
             let is_token = mask_b.gt(0.0f32)?;
-            let padding_bias = is_token.where_cond(&zeros, &negatives)?;
+            let padding_bias = is_token.where_cond(&zeros, &negatives)?.to_dtype(self.dtype)?;
+            tracing::info!("Intermediate padding_bias dtype: {:?}", padding_bias.dtype());
 
             let expanded_bias = padding_bias.broadcast_as((
                 batch_size,
@@ -598,7 +639,9 @@ impl Qwen3Model {
             // Apply causal masking
             self.get_causal_attention_bias(expanded_bias)?
         };
+        tracing::info!("Final attention_bias dtype: {:?}", attention_bias.dtype());
 
+        tracing::info!("--- Calling forward_layers ---");
         // Call the core layer processing
         self.forward_layers(&input_ids, &position_ids, Some(&attention_bias))
     }
