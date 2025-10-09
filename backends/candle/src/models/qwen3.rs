@@ -515,11 +515,10 @@ impl Qwen3Model {
     ) -> Result<Tensor> {
         let (batch_size, max_length) = input_ids.dims2()?;
 
-        let mut hidden_states = self.embeddings.forward(input_ids)?;
+        let i64_ids = input_ids.to_dtype(DType::I64)?;
+        let mut hidden_states = self.embeddings.forward(&i64_ids)?;
 
-        // CRITICAL FIX: Ensure embeddings output is in the model dtype (F32/F16/BF16).
-        // Defensive cast so that downstream matmul calls never see integer tensors, which Candle
-        // rejects for linear algebra.
+        // Ensure embeddings output is in the model dtype (F32/F16/BF16).
         hidden_states = if hidden_states.dtype() != self.dtype {
             hidden_states.to_dtype(self.dtype)?
         } else {
