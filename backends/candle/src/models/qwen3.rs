@@ -558,40 +558,37 @@ impl Qwen3Model {
         input_ids: &Tensor,
         attention_mask: &Tensor,
     ) -> Result<Tensor> {
-        // CRITICAL: Force I64 dtype for all indexing tensors
-        // This prevents integer dtype leakage into matmul operations
-        let input_ids = input_ids.to_device(&self.device)?.to_dtype(DType::I64)?;
-        let attention_mask = attention_mask
-            .to_device(&self.device)?
-            .to_dtype(DType::I64)?;
+        let input_ids = input_ids.to_device(&self.device)?;
+        let attention_mask = attention_mask.to_device(&self.device)?;
 
         let (batch_size, seq_len) = input_ids.dims2()?;
 
         // Create position_ids from attention_mask for left-padding.
-        // Padded tokens get position 0, and actual tokens get incremental positions.
-        // CRITICAL: Keep position_ids as I64 (not U32) to prevent dtype mixing
         let position_ids = {
-            let i64_mask = attention_mask.to_dtype(DType::I64)?;
-            let one = Tensor::ones_like(&i64_mask)?;
-            (i64_mask.cumsum(D::Minus1)? - one)?
-                .broadcast_mul(&i64_mask)?
-                .to_dtype(DType::I64)? // Keep as I64, not U32!
+            // Calculation happens in the dtype of attention_mask (U32)
+            let one = Tensor::ones_like(&attention_mask)?;
+            (attention_mask.cumsum(D::Minus1)? - one)?.broadcast_mul(&attention_mask)?
         };
 
         // Create attention_bias from attention_mask
         let attention_bias = {
             let min_value = match self.dtype {
-                DType::F32 => f32::MIN,
+                DType::F32 => f32::NEG_INFINITY,
                 _ => -65504.0,
             };
 
-            let mask_b = attention_mask.reshape((batch_size, 1, 1, seq_len))?;
+            // Convert mask to float before creating bias to avoid dtype leakage
+            let mask_b = attention_mask.to_dtype(self.dtype)?;
+            let mask_b = mask_b.reshape((batch_size, 1, 1, seq_len))?;
+
             let negatives =
                 Tensor::full(min_value, mask_b.shape(), &self.device)?.to_dtype(self.dtype)?;
             let zeros = Tensor::zeros_like(&mask_b)?.to_dtype(self.dtype)?;
 
-            // Where mask is 0 (padding), use a large negative value. Where it is 1 (token), use 0.
-            let padding_bias = mask_b.where_cond(&zeros, &negatives)?;
+            // Use a boolean mask for where_cond for type safety.
+            let is_token = mask_b.gt(0.0f32)?;
+            let padding_bias = is_token.where_cond(&zeros, &negatives)?;
+
             let expanded_bias = padding_bias.broadcast_as((
                 batch_size,
                 self.num_attention_heads,

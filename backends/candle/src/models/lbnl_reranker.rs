@@ -34,32 +34,20 @@ impl LbnlReranker {
     pub fn forward(&self, input: &ListwiseBlockInput) -> CResult<ListwiseBlockOutput> {
         let t = input.input_ids.len();
 
-        // CRITICAL FIX: Use I64 dtype for indices to match Candle's internal expectations
-        // Candle's embedding/mask/position pipeline expects I64 indices for stable dtype flow
-        // Using U32 can cause integer dtypes to leak into matmul boundaries
-        let ids = Tensor::from_vec(input.input_ids.clone(), (1, t), &self.device)?
-            .to_dtype(DType::I64)?;
-
-        // Use attention mask from input (preserves left-padding structure from tokenizer)
-        // Python reference: tokenizer creates mask with 0 for padding, 1 for real tokens
-        // I64 dtype ensures clean integer→float boundary at embedding layer
-        let mask = Tensor::from_vec(input.attention_mask.clone(), (1, t), &self.device)?
-            .to_dtype(DType::I64)?;
+        let ids = Tensor::from_vec(input.input_ids.clone(), (1, t), &self.device)?;
+        let mask = Tensor::from_vec(input.attention_mask.clone(), (1, t), &self.device)?;
 
         // Use forward_with_tensors for hidden states extraction
         let hs = self.qwen3.forward_with_tensors(&ids, &mask)?;
 
-        // CRITICAL FIX: Force conversion to F32 to prevent I64 dtype errors in projector matmul
-        // With I64 input indices, embeddings should output F32, but defensive cast ensures safety
-        // Projector only supports F32/F16/BF16 for matmul operations
+        // Ensure hidden states are F32 before projector
         let hs = if hs.dtype() != DType::F32 {
             tracing::warn!(
-                "Hidden states dtype is {:?}, converting to F32 (this should not happen with I64 inputs)",
+                "Hidden states dtype is {:?}, converting to F32 for projector.",
                 hs.dtype()
             );
             hs.to_dtype(DType::F32)?
         } else {
-            tracing::debug!("Hidden states dtype is F32 as expected");
             hs
         };
 
@@ -69,16 +57,15 @@ impl LbnlReranker {
 
         for (i, &tid) in input.input_ids.iter().enumerate() {
             if tid == input.embed_token_id {
+                // Doc embedding is from the token *before* the marker
                 doc_token_positions.push(i.saturating_sub(1));
             }
             if tid == input.rerank_token_id {
-                rerank_pos = Some(i);
+                // Query embedding is also from the token *before* the marker
+                rerank_pos = Some(i.saturating_sub(1));
             }
         }
-        let qpos = match rerank_pos {
-            Some(pos) => pos,
-            None => candle::bail!("No rerank token found"),
-        };
+        let qpos = rerank_pos.ok_or_else(|| candle::Error::Msg("No rerank token found".into()))?;
 
         // Extract hidden states at positions → F32 [1, H]
         // Note: hs is already F32 from conversion above, but we keep .to_dtype for safety
