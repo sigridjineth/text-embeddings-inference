@@ -164,9 +164,20 @@ impl FdeModule {
         let stride_doc = (self.config.r_reps * num_buckets) as u32;
         let stride_r = num_buckets as u32;
         
-        let global_indices = (doc_ids_expanded * stride_doc as f64)?
-            .add(&(r_indices * stride_r as f64)?)?
-            .add(&bucket_ids.to_dtype(DType::F64)?)?;
+        // Convert strides to tensors for broadcasting
+        // Note: We cast to F64 for calculation to avoid potential overflow if indices are large, 
+        // but U32 is usually fine. However, Candle's arithmetic is often smoother with Floats.
+        // But here we have U32 inputs. Let's stick to U32 if possible, or cast inputs to F64.
+        // The error was "lhs: U32, rhs: F64".
+        // Let's cast everything to F64 for safety and then back to U32.
+        
+        let doc_ids_f64 = doc_ids_expanded.to_dtype(DType::F64)?;
+        let r_indices_f64 = r_indices.to_dtype(DType::F64)?;
+        let bucket_ids_f64 = bucket_ids.to_dtype(DType::F64)?;
+        
+        let global_indices = (doc_ids_f64 * stride_doc as f64)?
+            .add(&(r_indices_f64 * stride_r as f64)?)?
+            .add(&bucket_ids_f64)?;
         
         // Flatten indices: [total_tokens * r_reps]
         let global_indices_flat = global_indices.flatten_all()?.to_dtype(DType::U32)?;
