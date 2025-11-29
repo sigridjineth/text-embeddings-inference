@@ -264,11 +264,18 @@ impl FlashBertModel {
             }
         };
 
-        let fde = if pool == Pool::Fde {
+        let (fde, colbert_linear) = if pool == Pool::Fde {
             let fde_config = FdeConfig::from_env()?;
-            Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?)
+            let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?);
+            
+            // Load ColBERT linear layer for BGE-M3
+            let colbert_weight = vb.pp("colbert_linear").get((config.hidden_size, config.hidden_size), "weight")?;
+            let colbert_bias = vb.pp("colbert_linear").get(config.hidden_size, "bias")?;
+            let colbert_linear = Some(Linear::new(colbert_weight, Some(colbert_bias), None));
+            
+            (fde, colbert_linear)
         } else {
-            None
+            (None, None)
         };
 
         let (embeddings, encoder) = match (
@@ -294,6 +301,7 @@ impl FlashBertModel {
             pool,
             classifier,
             splade,
+            colbert_linear,
             fde,
             device: vb.device().clone(),
             span: tracing::span!(tracing::Level::TRACE, "model"),
@@ -339,11 +347,18 @@ impl FlashBertModel {
             }
         };
 
-        let fde = if pool == Pool::Fde {
+        let (fde, colbert_linear) = if pool == Pool::Fde {
             let fde_config = FdeConfig::from_env()?;
-            Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?)
+            let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?);
+            
+            // Load ColBERT linear layer for BGE-M3
+            let colbert_weight = vb.pp("colbert_linear").get((config.hidden_size, config.hidden_size), "weight")?;
+            let colbert_bias = vb.pp("colbert_linear").get(config.hidden_size, "bias")?;
+            let colbert_linear = Some(Linear::new(colbert_weight, Some(colbert_bias), None));
+            
+            (fde, colbert_linear)
         } else {
-            None
+            (None, None)
         };
 
         let (embeddings, encoder) = match (
@@ -379,6 +394,7 @@ impl FlashBertModel {
             pool,
             classifier,
             splade,
+            colbert_linear,
             fde,
             device: vb.device().clone(),
             span: tracing::span!(tracing::Level::TRACE, "model"),
