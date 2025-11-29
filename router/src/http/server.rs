@@ -569,6 +569,7 @@ async fn similarity(
         prompt_name: parameters.prompt_name,
         normalize: false,
         dimensions: None,
+        mode: None,
     };
 
     // Get embeddings
@@ -637,6 +638,7 @@ async fn embed(
                     req.prompt_name,
                     req.normalize,
                     req.dimensions,
+                    req.mode,
                     permit,
                 )
                 .await
@@ -690,11 +692,13 @@ async fn embed(
 
             let mut futures = Vec::with_capacity(batch_size);
             let mut compute_chars = 0;
+            let mode = req.mode.clone();
 
             for input in inputs {
                 compute_chars += input.count_chars();
 
                 let local_infer = infer.clone();
+                let mode = mode.clone();
                 let prompt_name = req.prompt_name.clone();
                 futures.push(async move {
                     let permit = local_infer.acquire_permit().await;
@@ -706,6 +710,7 @@ async fn embed(
                             prompt_name,
                             req.normalize,
                             req.dimensions,
+                            mode,
                             permit,
                         )
                         .await
@@ -1184,6 +1189,7 @@ async fn openai_embed(
                     None,
                     true,
                     req.dimensions,
+                    None,
                     permit,
                 )
                 .await
@@ -1257,6 +1263,7 @@ async fn openai_embed(
                             None,
                             true,
                             req.dimensions,
+                            None,
                             permit,
                         )
                         .await

@@ -332,7 +332,7 @@ impl BertLayer {
     }
 }
 
-struct BertEncoder {
+pub struct BertEncoder {
     layers: Vec<BertLayer>,
     span: tracing::Span,
 }
@@ -347,7 +347,7 @@ impl BertEncoder {
         Ok(BertEncoder { layers, span })
     }
 
-    fn forward(&self, hidden_states: &Tensor, attention_bias: Option<&Tensor>) -> Result<Tensor> {
+    pub fn forward(&self, hidden_states: &Tensor, attention_bias: Option<&Tensor>) -> Result<Tensor> {
         let _enter = self.span.enter();
 
         let mut hidden_states = hidden_states.clone();
@@ -559,18 +559,18 @@ impl BertSpladeHead {
 }
 
 pub struct BertModel {
-    embeddings: BertEmbeddings,
-    encoder: BertEncoder,
-    pool: Pool,
-    classifier: Option<Box<dyn ClassificationHead + Send>>,
-    splade: Option<BertSpladeHead>,
+    pub embeddings: BertEmbeddings,
+    pub encoder: BertEncoder,
+    pub pool: Pool,
+    pub classifier: Option<Box<dyn ClassificationHead + Send>>,
+    pub splade: Option<BertSpladeHead>,
 
-    num_attention_heads: usize,
+    pub num_attention_heads: usize,
 
-    device: Device,
-    dtype: DType,
+    pub device: Device,
+    pub dtype: DType,
 
-    span: tracing::Span,
+    pub span: tracing::Span,
 }
 
 impl BertModel {
@@ -849,7 +849,7 @@ impl BertModel {
                 // CLS pooling
                 Pool::Cls => outputs.i((.., 0))?,
                 // Last token pooling is not supported for this model
-                Pool::LastToken => unreachable!(),
+                Pool::LastToken => unreachable!(), Pool::Fde => todo!(),
                 // Mean pooling
                 Pool::Mean => {
                     if let Some(ref attention_mask) = attention_mask {

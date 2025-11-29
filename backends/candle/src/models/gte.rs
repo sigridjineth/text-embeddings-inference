@@ -405,7 +405,12 @@ impl GTEModel {
                 let classifier = GTEClassificationHead::load(vb.clone(), config)?;
                 (pool, Some(classifier))
             }
-            ModelType::Embedding(pool) => (pool, None),
+            ModelType::Embedding(pool) => {
+                if pool == Pool::Fde {
+                    candle::bail!("`fde` is not supported for GTE");
+                }
+                (pool, None)
+            }
         };
 
         let (word_embeddings, token_type_embeddings, encoder, embeddings_norm) =
@@ -634,6 +639,7 @@ impl GTEModel {
                 Pool::Cls => outputs.i((.., 0))?,
                 // Last token pooling is not supported for this model
                 Pool::LastToken => unreachable!(),
+                Pool::Fde => unreachable!(),
                 // Mean pooling
                 Pool::Mean => {
                     if let Some(ref attention_mask) = attention_mask {

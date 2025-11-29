@@ -743,7 +743,7 @@ impl ModernBertModel {
 
             let pooled_embeddings = match self.pool {
                 Pool::Cls => outputs.i((.., 0))?,
-                Pool::LastToken | Pool::Splade => unreachable!(),
+                Pool::LastToken | Pool::Splade => unreachable!(), Pool::Fde => todo!(),
                 Pool::Mean => {
                     if let Some(ref attention_mask) = attention_mask {
                         let mut attention_mask = attention_mask.clone();

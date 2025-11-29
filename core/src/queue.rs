@@ -29,6 +29,8 @@ pub struct Metadata {
     pub(crate) prompt_tokens: usize,
     /// Pooled embedding
     pub(crate) pooling: bool,
+    /// FDE mode
+    pub(crate) mode: Option<String>,
 }
 
 /// Request Queue
@@ -126,6 +128,7 @@ fn queue_blocking_task(
                 let mut pooled_indices = Vec::with_capacity(capacity);
                 let mut raw_indices = Vec::with_capacity(capacity);
                 let mut metadata = Vec::with_capacity(capacity);
+                let mut modes = Vec::with_capacity(capacity);
                 let mut cu_seq_lengths = Vec::with_capacity(capacity);
                 cu_seq_lengths.push(0);
 
@@ -169,6 +172,7 @@ fn queue_blocking_task(
                     position_ids.extend(entry.encoding.position_ids);
 
                     current_tokens += entry_tokens;
+                    modes.push(entry.metadata.mode.clone());
                     metadata.push(entry.metadata);
                     cu_seq_lengths.push(current_tokens as u32);
 
@@ -193,6 +197,7 @@ fn queue_blocking_task(
                             max_length,
                             pooled_indices,
                             raw_indices,
+                            modes,
                         },
                     ))
                 };

@@ -437,6 +437,10 @@ pub(crate) struct EmbedRequest {
     /// shape of the representation will be returned instead.
     #[schema(default = "null", example = "null", nullable = true)]
     pub dimensions: Option<usize>,
+
+    /// FDE mode: "query" or "doc"
+    #[schema(default = "null", example = "query", nullable = true)]
+    pub mode: Option<String>,
 }
 
 fn default_normalize() -> bool {

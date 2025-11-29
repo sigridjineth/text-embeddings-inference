@@ -236,6 +236,7 @@ impl Backend for OrtBackend {
                     }
                 }
                 Pool::Splade => unreachable!(),
+                Pool::Fde => return Err(BackendError::Inference("FDE pooling not supported in ORT backend".to_string())),
             };
 
             for (i, e) in batch

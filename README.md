@@ -454,6 +454,27 @@ curl 127.0.0.1:8080/embed_sparse \
     -H 'Content-Type: application/json'
 ```
 
+### Using BGE-M3 with FDE
+
+You can use the Fixed Dimensional Encoding (FDE) pooling with BGE-M3 models to compress the multi-vector output into a fixed-size representation.
+
+First, generate the FDE parameters and configuration in your model directory:
+
+```bash
+python generate_fde_params.py --output-dir /path/to/bge-m3-model --ksim 5 --d-proj 16
+```
+
+Then run TEI with the `bge_m3_fde` pooling option:
+
+```shell
+model=/path/to/bge-m3-model
+volume=$PWD/data
+
+docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model --pooling bge_m3_fde
+```
+
+You can also override FDE parameters via environment variables (e.g., `FDE_KSIM`, `FDE_D_PROJ`).
+
 ### Distributed Tracing
 
 `text-embeddings-inference` is instrumented with distributed tracing using OpenTelemetry. You can use this feature

@@ -111,6 +111,8 @@ enum Config {
     MPNet(MPNetConfig),
     #[serde(rename(deserialize = "modernbert"))]
     ModernBert(ModernBertConfig),
+    #[serde(rename(deserialize = "fde_bert"))]
+    FdeBert(crate::models::fde_bert::FdeConfig),
 }
 
 pub struct CandleBackend {
@@ -339,6 +341,12 @@ impl CandleBackend {
                     ModernBertModel::load(vb, &config, model_type).s()?,
                 ))
             }
+            (Config::FdeBert(config), Device::Cpu | Device::Metal(_)) => {
+                tracing::info!("Starting FdeBert model on {:?}", device);
+                Ok(Box::new(
+                    crate::models::fde_bert::FdeBertModel::load(vb, &config, model_type).s()?,
+                ))
+            }
             #[cfg(feature = "cuda")]
             (Config::Bert(config), Device::Cuda(_)) => {
                 if cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
@@ -426,6 +434,15 @@ impl CandleBackend {
                         ModernBertModel::load(vb, &config, model_type).s()?,
                     ))
                 }
+            }
+            #[cfg(feature = "cuda")]
+            (Config::FdeBert(config), Device::Cuda(_)) => {
+                // For now, FDE does not have a specialized Flash implementation.
+                // We use the standard implementation which supports CUDA tensors.
+                tracing::info!("Starting FdeBert model on {:?}", device);
+                Ok(Box::new(
+                    crate::models::fde_bert::FdeBertModel::load(vb, &config, model_type).s()?,
+                ))
             }
             #[cfg(feature = "cuda")]
             (Config::DistilBert(config), Device::Cuda(_)) => {

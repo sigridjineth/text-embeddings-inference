@@ -144,6 +144,7 @@ impl Infer {
                 truncation_direction,
                 prompt_name,
                 false,
+                None,
                 &start_time,
                 permit,
             )
@@ -195,6 +196,7 @@ impl Infer {
                 truncation_direction,
                 prompt_name,
                 true,
+                None,
                 &start_time,
                 permit,
             )
@@ -232,6 +234,7 @@ impl Infer {
         prompt_name: Option<String>,
         normalize: bool,
         dimensions: Option<usize>,
+        mode: Option<String>,
         permit: OwnedSemaphorePermit,
     ) -> Result<PooledEmbeddingsInferResponse, TextEmbeddingsError> {
         let start_time = Instant::now();
@@ -263,6 +266,7 @@ impl Infer {
                 truncation_direction,
                 prompt_name,
                 true,
+                mode,
                 &start_time,
                 permit,
             )
@@ -330,6 +334,7 @@ impl Infer {
         truncation_direction: TruncationDirection,
         prompt_name: Option<String>,
         pooling: bool,
+        mode: Option<String>,
         start_time: &Instant,
         _permit: OwnedSemaphorePermit,
     ) -> Result<InferResult, TextEmbeddingsError> {
@@ -369,6 +374,7 @@ impl Infer {
                 queue_time: Instant::now(),
                 prompt_tokens: encoding.input_ids.len(),
                 pooling,
+                mode,
             },
             encoding,
         });
@@ -435,6 +441,7 @@ impl Infer {
                 queue_time: Instant::now(),
                 prompt_tokens: encoding.input_ids.len(),
                 pooling: true,
+                mode: None,
             },
             encoding,
         });

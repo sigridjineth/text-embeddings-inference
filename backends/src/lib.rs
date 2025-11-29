@@ -221,6 +221,7 @@ impl Backend {
             max_length: tmp_length,
             pooled_indices,
             raw_indices: vec![],
+            modes: vec![None; batch_size as usize],
         }
     }
 
@@ -276,8 +277,9 @@ impl Backend {
             position_ids,
             cumulative_seq_lengths,
             max_length,
-            pooled_indices,
+            pooled_indices: pooled_indices.clone(),
             raw_indices: vec![],
+            modes: vec![None; pooled_indices.len()],
         };
 
         match &self.model_type {
@@ -312,6 +314,7 @@ impl Backend {
                 max_length: 1,
                 pooled_indices: vec![0],
                 raw_indices: vec![],
+                modes: vec![None],
             };
             match &self.model_type {
                 ModelType::Classifier => self.predict(batch).await.map(|_| ()),

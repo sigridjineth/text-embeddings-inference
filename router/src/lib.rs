@@ -619,8 +619,12 @@ fn get_backend_model_type(
                     if !config.model_type.to_lowercase().contains("bert") {
                         return Err(err).context("The `--pooling` arg is not set and we could not find a pooling configuration (`1_Pooling/config.json`) for this model.");
                     }
-                    tracing::warn!("The `--pooling` arg is not set and we could not find a pooling configuration (`1_Pooling/config.json`) for this model but the model is a BERT variant. Defaulting to `CLS` pooling.");
-                    text_embeddings_backend::Pool::Cls
+                    if config.model_type == "fde_bert" {
+                        text_embeddings_backend::Pool::Fde
+                    } else {
+                        tracing::warn!("The `--pooling` arg is not set and we could not find a pooling configuration (`1_Pooling/config.json`) for this model but the model is a BERT variant. Defaulting to `CLS` pooling.");
+                        text_embeddings_backend::Pool::Cls
+                    }
                 }
             }
         }
@@ -647,6 +651,8 @@ pub struct PoolConfig {
     pooling_mode_mean_tokens: bool,
     #[serde(default)]
     pooling_mode_lasttoken: bool,
+    #[serde(default)]
+    pooling_mode_fde: bool,
 }
 
 impl TryFrom<PoolConfig> for Pool {
@@ -661,6 +667,9 @@ impl TryFrom<PoolConfig> for Pool {
         }
         if config.pooling_mode_lasttoken {
             return Ok(Pool::LastToken);
+        }
+        if config.pooling_mode_fde {
+            return Ok(Pool::Fde);
         }
         Err(anyhow!("Pooling config {config:?} is not supported"))
     }

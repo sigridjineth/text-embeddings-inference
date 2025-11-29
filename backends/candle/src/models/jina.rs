@@ -434,6 +434,9 @@ impl JinaBertModel {
                 if pool == Pool::LastToken {
                     candle::bail!("`last_token` is not supported for Jina");
                 }
+                if pool == Pool::Fde {
+                    candle::bail!("`fde` is not supported for Jina");
+                }
                 (pool, None)
             }
         };
@@ -658,6 +661,7 @@ impl JinaBertModel {
                 Pool::Cls => outputs.i((.., 0))?,
                 // Last token pooling is not supported for this model
                 Pool::LastToken => unreachable!(),
+                Pool::Fde => unreachable!(),
                 // Mean pooling
                 Pool::Mean => {
                     if let Some(ref attention_mask) = attention_mask {

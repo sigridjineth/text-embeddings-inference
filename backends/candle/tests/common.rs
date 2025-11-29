@@ -1,11 +1,9 @@
 use anyhow::Result;
-use hf_hub::api::sync::{ApiBuilder, ApiError, ApiRepo};
-use hf_hub::{Repo, RepoType};
-use insta::internals::YamlMatcher;
+use hf_hub::api::sync::ApiRepo;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use text_embeddings_backend_core::{Batch, Embedding, Embeddings};
 use tokenizers::pre_tokenizers::metaspace::PrependScheme;
 use tokenizers::pre_tokenizers::sequence::Sequence;
@@ -103,129 +101,7 @@ pub fn sort_embeddings(embeddings: Embeddings) -> (Vec<Vec<f32>>, Vec<Vec<f32>>)
     (pooled_embeddings, raw_embeddings)
 }
 
-pub fn download_artifacts(
-    model_id: &'static str,
-    revision: Option<&'static str>,
-    dense_path: Option<&'static str>,
-) -> Result<PathBuf> {
-    let mut builder = ApiBuilder::from_env().with_progress(false);
 
-    if let Some(cache_dir) = std::env::var_os("HUGGINGFACE_HUB_CACHE") {
-        builder = builder.with_cache_dir(cache_dir.into());
-    }
-
-    if let Ok(origin) = std::env::var("HF_HUB_USER_AGENT_ORIGIN") {
-        builder = builder.with_user_agent("origin", origin.as_str());
-    }
-
-    let api = builder.build().unwrap();
-    let api_repo = if let Some(revision) = revision {
-        api.repo(Repo::with_revision(
-            model_id.to_string(),
-            RepoType::Model,
-            revision.to_string(),
-        ))
-    } else {
-        api.repo(Repo::new(model_id.to_string(), RepoType::Model))
-    };
-
-    api_repo.get("config.json")?;
-    api_repo.get("tokenizer.json")?;
-
-    let model_files = match download_safetensors(&api_repo) {
-        Ok(p) => p,
-        Err(_) => {
-            tracing::warn!("safetensors weights not found. Using `pytorch_model.bin` instead. Model loading will be significantly slower.");
-            tracing::info!("Downloading `pytorch_model.bin`");
-            let p = api_repo.get("pytorch_model.bin")?;
-            vec![p]
-        }
-    };
-
-    // Download dense path files if specified
-    if let Some(dense_path) = dense_path {
-        let dense_config_path = format!("{}/config.json", dense_path);
-        match api_repo.get(&dense_config_path) {
-            Ok(_) => tracing::info!("Downloaded dense config: {}", dense_config_path),
-            Err(err) => tracing::warn!(
-                "Could not download dense config {}: {}",
-                dense_config_path,
-                err
-            ),
-        }
-
-        // Try to download dense model files (safetensors first, then pytorch)
-        let dense_safetensors_path = format!("{}/model.safetensors", dense_path);
-        match api_repo.get(&dense_safetensors_path) {
-            Ok(_) => tracing::info!("Downloaded dense safetensors: {}", dense_safetensors_path),
-            Err(_) => {
-                tracing::warn!("Dense safetensors not found. Trying pytorch_model.bin");
-                let dense_pytorch_path = format!("{}/pytorch_model.bin", dense_path);
-                match api_repo.get(&dense_pytorch_path) {
-                    Ok(_) => {
-                        tracing::info!("Downloaded dense pytorch model: {}", dense_pytorch_path)
-                    }
-                    Err(err) => tracing::warn!(
-                        "Could not download dense pytorch model {}: {}",
-                        dense_pytorch_path,
-                        err
-                    ),
-                }
-            }
-        }
-    }
-
-    let model_root = model_files[0].parent().unwrap().to_path_buf();
-    Ok(model_root)
-}
-
-fn download_safetensors(api: &ApiRepo) -> Result<Vec<PathBuf>, ApiError> {
-    // Single file
-    tracing::info!("Downloading `model.safetensors`");
-    match api.get("model.safetensors") {
-        Ok(p) => return Ok(vec![p]),
-        Err(err) => tracing::warn!("Could not download `model.safetensors`: {}", err),
-    };
-
-    // Sharded weights
-    // Download and parse index file
-    tracing::info!("Downloading `model.safetensors.index.json`");
-    let index_file = api.get("model.safetensors.index.json")?;
-    let index_file_string: String =
-        std::fs::read_to_string(index_file).expect("model.safetensors.index.json is corrupted");
-    let json: serde_json::Value = serde_json::from_str(&index_file_string)
-        .expect("model.safetensors.index.json is corrupted");
-
-    let weight_map = match json.get("weight_map") {
-        Some(serde_json::Value::Object(map)) => map,
-        _ => panic!("model.safetensors.index.json is corrupted"),
-    };
-
-    let mut safetensors_filenames = std::collections::HashSet::new();
-    for value in weight_map.values() {
-        if let Some(file) = value.as_str() {
-            safetensors_filenames.insert(file.to_string());
-        }
-    }
-
-    // Download weight files
-    let mut safetensors_files = Vec::new();
-    for n in safetensors_filenames {
-        tracing::info!("Downloading `{}`", n);
-        safetensors_files.push(api.get(&n)?);
-    }
-
-    Ok(safetensors_files)
-}
-
-#[allow(unused)]
-pub(crate) fn relative_matcher() -> YamlMatcher<SnapshotScores> {
-    YamlMatcher::new()
-}
-
-pub fn cosine_matcher() -> YamlMatcher<SnapshotEmbeddings> {
-    YamlMatcher::new()
-}
 
 pub fn load_tokenizer(model_root: &Path) -> Result<Tokenizer> {
     // Load tokenizer
@@ -301,5 +177,6 @@ pub fn batch(encodings: Vec<Encoding>, pooled_indices: Vec<u32>, raw_indices: Ve
         max_length,
         pooled_indices,
         raw_indices,
+        modes: vec![None; encodings.len()],
     }
 }

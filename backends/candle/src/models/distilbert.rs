@@ -643,7 +643,7 @@ impl DistilBertModel {
                 // CLS pooling
                 Pool::Cls => outputs.i((.., 0))?,
                 // Last token pooling is not supported for this model
-                Pool::LastToken => unreachable!(),
+                Pool::LastToken => unreachable!(), Pool::Fde => todo!(),
                 // Mean pooling
                 Pool::Mean => {
                     if let Some(ref attention_mask) = attention_mask {

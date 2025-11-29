@@ -14,6 +14,7 @@ pub struct Batch {
     pub max_length: u32,
     pub pooled_indices: Vec<u32>,
     pub raw_indices: Vec<u32>,
+    pub modes: Vec<Option<String>>,
 }
 
 impl Batch {
@@ -94,6 +95,8 @@ pub enum Pool {
     Splade,
     /// Select the last token as embedding
     LastToken,
+    /// Apply FDE (Fixed Dimensional Encoding) pooling
+    Fde,
 }
 
 impl fmt::Display for Pool {
@@ -103,6 +106,7 @@ impl fmt::Display for Pool {
             Pool::Mean => write!(f, "mean"),
             Pool::Splade => write!(f, "splade"),
             Pool::LastToken => write!(f, "last_token"),
+            Pool::Fde => write!(f, "fde"),
         }
     }
 }

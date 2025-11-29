@@ -773,6 +773,7 @@ impl Qwen3Model {
                 Pool::Splade => {
                     unreachable!("Splade is not supported for Qwen3");
                 }
+                Pool::Fde => todo!(),
             }
         } else {
             None

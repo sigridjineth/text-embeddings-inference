@@ -15,6 +15,7 @@ from text_embeddings_server.models.jinaBert_model import FlashJinaBert
 from text_embeddings_server.models.flash_mistral import FlashMistral
 from text_embeddings_server.models.flash_qwen3 import FlashQwen3
 from text_embeddings_server.utils.device import get_device, use_ipex
+from text_embeddings_server.models.bge_m3_fde_model import BGEM3FDEModel
 
 __all__ = ["Model"]
 
@@ -127,6 +128,15 @@ def get_model(model_path: Path, dtype: Optional[str], pool: str):
             return create_model(FlashQwen3, model_path, device, datatype, pool)
         except FileNotFoundError:
             return create_model(DefaultModel, model_path, device, datatype, pool)
+
+    if config.model_type == "xlm-roberta":
+        # Check if it's likely BGE-M3 (by path or config name)
+        # This prevents other XLM-R models from accidentally using this path if they just happen to use the same pool name (unlikely but safe)
+        is_bge_m3 = "bge-m3" in str(model_path).lower() or "bge-m3" in config.name_or_path.lower()
+        
+        if pool == "bge_m3_fde" and is_bge_m3:
+            return create_model(BGEM3FDEModel, model_path, device, datatype, pool)
+        return create_model(DefaultModel, model_path, device, datatype, pool)
 
     # Default case
     if config.architectures[0].endswith("Classification"):

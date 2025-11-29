@@ -448,6 +448,9 @@ impl MPNetModel {
                 if pool == Pool::Splade {
                     candle::bail!("`splade` is not supported for MPNet")
                 }
+                if pool == Pool::Fde {
+                    candle::bail!("`fde` is not supported for MPNet")
+                }
                 pool
             }
         };
@@ -617,6 +620,7 @@ impl MPNetModel {
                 Pool::Cls => outputs.i((.., 0))?,
                 // Last token pooling is not supported for this model
                 Pool::LastToken => unreachable!(),
+                Pool::Fde => unreachable!(),
                 // Mean pooling
                 Pool::Mean => {
                     if let Some(ref attention_mask) = attention_mask {
