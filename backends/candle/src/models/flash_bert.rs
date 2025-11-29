@@ -261,9 +261,6 @@ impl FlashBertModel {
                 };
                 (pool, None, splade)
             }
-                };
-                (pool, None, splade, None)
-            }
         };
 
         let fde = if pool == Pool::Fde {
@@ -296,6 +293,7 @@ impl FlashBertModel {
             pool,
             classifier,
             splade,
+            fde,
             device: vb.device().clone(),
             span: tracing::span!(tracing::Level::TRACE, "model"),
         })
@@ -337,9 +335,6 @@ impl FlashBertModel {
                     None
                 };
                 (pool, None, splade)
-            }
-                };
-                (pool, None, splade, None)
             }
         };
 
@@ -383,6 +378,7 @@ impl FlashBertModel {
             pool,
             classifier,
             splade,
+            fde,
             device: vb.device().clone(),
             span: tracing::span!(tracing::Level::TRACE, "model"),
         })
