@@ -274,7 +274,7 @@ impl FlashBertModel {
             let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?);
             
             // Load ColBERT linear layer for BGE-M3
-            // Try multiple prefixes
+            // 1. Try loading from main weights (vb) with various prefixes
             let colbert_linear = if let Ok(w) = vb.pp("colbert_linear").get((config.hidden_size, config.hidden_size), "weight") {
                 let b = vb.pp("colbert_linear").get(config.hidden_size, "bias")?;
                 Some(Linear::new(w, Some(b), None))
@@ -285,7 +285,29 @@ impl FlashBertModel {
                 let b = vb.pp("roberta.colbert_linear").get(config.hidden_size, "bias")?;
                 Some(Linear::new(w, Some(b), None))
             } else {
-                candle::bail!("Could not find colbert_linear weights. Please ensure you are using a BGE-M3 model.")
+                // 2. Try loading from separate file `colbert_linear.pt` if model_path is provided
+                let mut loaded = None;
+                if let Some(path) = model_path {
+                    let pt_path = path.join("colbert_linear.pt");
+                    if pt_path.exists() {
+                        tracing::info!("Found separate colbert_linear.pt at {:?}", pt_path);
+                        let vb_colbert = VarBuilder::from_pth(&pt_path, vb.dtype(), vb.device())?;
+                        // Try "weight" or "linear.weight"
+                        if let Ok(w) = vb_colbert.get((config.hidden_size, config.hidden_size), "weight") {
+                            let b = vb_colbert.get(config.hidden_size, "bias")?;
+                            loaded = Some(Linear::new(w, Some(b), None));
+                        } else if let Ok(w) = vb_colbert.get((config.hidden_size, config.hidden_size), "linear.weight") {
+                            let b = vb_colbert.get(config.hidden_size, "linear.bias")?;
+                            loaded = Some(Linear::new(w, Some(b), None));
+                        }
+                    }
+                }
+                
+                if let Some(l) = loaded {
+                    Some(l)
+                } else {
+                    candle::bail!("Could not find colbert_linear weights in main model or colbert_linear.pt. Please ensure you are using a BGE-M3 model and the file is present.")
+                }
             };
             
             (fde, colbert_linear)
@@ -368,7 +390,7 @@ impl FlashBertModel {
             let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?);
             
             // Load ColBERT linear layer for BGE-M3
-            // Try multiple prefixes
+            // 1. Try loading from main weights (vb) with various prefixes
             let colbert_linear = if let Ok(w) = vb.pp("colbert_linear").get((config.hidden_size, config.hidden_size), "weight") {
                 let b = vb.pp("colbert_linear").get(config.hidden_size, "bias")?;
                 Some(Linear::new(w, Some(b), None))
@@ -379,7 +401,29 @@ impl FlashBertModel {
                 let b = vb.pp("roberta.colbert_linear").get(config.hidden_size, "bias")?;
                 Some(Linear::new(w, Some(b), None))
             } else {
-                candle::bail!("Could not find colbert_linear weights. Please ensure you are using a BGE-M3 model.")
+                // 2. Try loading from separate file `colbert_linear.pt` if model_path is provided
+                let mut loaded = None;
+                if let Some(path) = model_path {
+                    let pt_path = path.join("colbert_linear.pt");
+                    if pt_path.exists() {
+                        tracing::info!("Found separate colbert_linear.pt at {:?}", pt_path);
+                        let vb_colbert = VarBuilder::from_pth(&pt_path, vb.dtype(), vb.device())?;
+                        // Try "weight" or "linear.weight"
+                        if let Ok(w) = vb_colbert.get((config.hidden_size, config.hidden_size), "weight") {
+                            let b = vb_colbert.get(config.hidden_size, "bias")?;
+                            loaded = Some(Linear::new(w, Some(b), None));
+                        } else if let Ok(w) = vb_colbert.get((config.hidden_size, config.hidden_size), "linear.weight") {
+                            let b = vb_colbert.get(config.hidden_size, "linear.bias")?;
+                            loaded = Some(Linear::new(w, Some(b), None));
+                        }
+                    }
+                }
+                
+                if let Some(l) = loaded {
+                    Some(l)
+                } else {
+                    candle::bail!("Could not find colbert_linear weights in main model or colbert_linear.pt. Please ensure you are using a BGE-M3 model and the file is present.")
+                }
             };
             
             (fde, colbert_linear)
