@@ -463,7 +463,8 @@ impl FlashQwen3Model {
                         Some((outputs.sum_keepdim(0)? / (batch.max_length as f64))?)
                     }
                 }
-                Pool::Splade => {
+                Pool::Fde => candle::bail!("FDE pooling is not supported for this model"),
+            }    Pool::Splade => {
                     unreachable!();
                 }
             }

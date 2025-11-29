@@ -325,11 +325,12 @@ impl FlashDistilBertModel {
                             .collect();
 
                         // Concatenate all results
-                        Tensor::cat(&results?, 0)?
+                        Some(Tensor::cat(&results?, 0)?)
                     } else {
-                        (outputs.sum_keepdim(0)? / (batch.max_length as f64))?
+                        Some((outputs.sum_keepdim(0)? / (batch.max_length as f64))?)
                     }
                 }
+                Pool::Fde => candle::bail!("FDE pooling is not supported for this model"),
                 Pool::Splade => {
                     // Unwrap is safe here
                     let splade_head = self.splade.as_ref().unwrap();

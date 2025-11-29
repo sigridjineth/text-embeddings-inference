@@ -488,6 +488,7 @@ impl FlashBertModel {
                         Some(relu_log.max_keepdim(0)?)
                     }
                 }
+                Pool::Fde => candle::bail!("FDE pooling is not supported for this model"),
             }
         } else {
             None
