@@ -458,13 +458,7 @@ curl 127.0.0.1:8080/embed_sparse \
 
 You can use the Fixed Dimensional Encoding (FDE) pooling with BGE-M3 models to compress the multi-vector output into a fixed-size representation.
 
-First, generate the FDE parameters and configuration in your model directory:
-
-```bash
-python generate_fde_params.py --output-dir /path/to/bge-m3-model --ksim 5 --d-proj 16
-```
-
-Then run TEI with the `bge_m3_fde` pooling option:
+Simply run TEI with the `bge_m3_fde` pooling option. The FDE parameters (G, W, P matrices) will be generated deterministically on startup based on the configuration.
 
 ```shell
 model=/path/to/bge-m3-model
@@ -473,7 +467,22 @@ volume=$PWD/data
 docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model --pooling bge_m3_fde
 ```
 
-You can also override FDE parameters via environment variables (e.g., `FDE_KSIM`, `FDE_D_PROJ`).
+You can configure the FDE parameters using environment variables:
+
+- `FDE_KSIM`: Number of hash bits per repetition (default: 5)
+- `FDE_D_PROJ`: Dimension of the projection matrix W (default: 16)
+- `FDE_R_REPS`: Number of repetitions (default: 10)
+- `FDE_D_FINAL`: Final output dimension (default: 1024)
+- `FDE_SEED`: Random seed for deterministic generation (default: 42)
+
+Example with custom parameters:
+
+```shell
+docker run --gpus all -p 8080:80 -v $volume:/data \
+    -e FDE_KSIM=6 \
+    -e FDE_D_PROJ=32 \
+    ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model --pooling bge_m3_fde
+```
 
 ### Distributed Tracing
 
