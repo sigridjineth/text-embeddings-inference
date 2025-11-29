@@ -636,7 +636,7 @@ impl FlashBertModel {
                         let dim = colbert_vecs.dim(1)?;
                         let norm = (colbert_vecs.sqr()?.sum_keepdim(1)? + 1e-12)?.sqrt()?;
                         let norm = norm.broadcast_as((bs, dim))?;
-                        colbert_vecs / &norm
+                        (colbert_vecs / &norm)?
                     } else {
                         // If no tokens left (e.g. single token input), create empty tensor
                         // Skip linear and norm to avoid FPE
