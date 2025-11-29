@@ -614,16 +614,20 @@ impl FlashBertModel {
                     }
                     
                     let keep_indices_len = keep_indices.len();
-                    let keep_indices_tensor = Tensor::from_vec(keep_indices, keep_indices_len, &self.device)?;
-                    let colbert_vecs = outputs.index_select(&keep_indices_tensor, 0)?;
+                    let colbert_vecs = if keep_indices_len > 0 {
+                        let keep_indices_tensor = Tensor::from_vec(keep_indices, keep_indices_len, &self.device)?;
+                        outputs.index_select(&keep_indices_tensor, 0)?
+                    } else {
+                        Tensor::zeros((0, outputs.dim(1)?), DType::F16, &self.device)?
+                    };
 
                     // 2. Apply ColBERT linear
                     let colbert_vecs = colbert.forward(&colbert_vecs)?;
 
                     // 3. L2 Normalize
                     // normalize_rows is not available here, implement inline or use helper
-                    // Helper: x / x.sqr().sum_keepdim(1).sqrt()
-                    let norm = colbert_vecs.sqr()?.sum_keepdim(1)?.sqrt()?;
+                    // Helper: x / (x.sqr().sum_keepdim(1).sqrt() + eps)
+                    let norm = (colbert_vecs.sqr()?.sum_keepdim(1)? + 1e-12)?.sqrt()?;
                     let colbert_vecs = colbert_vecs.broadcast_div(&norm)?;
 
                     // 4. FDE Forward

@@ -111,120 +111,132 @@ impl FdeModule {
         // hidden_states: [total_tokens, hidden_size]
         // cumulative_seq_lengths: [batch_size + 1]
         
-        // 1. Normalize tokens
-        let hidden_states = normalize_rows(hidden_states)?;
-
-        // 2. Project values (W)
-        let values = if let Some(w) = &self.w {
-            hidden_states.matmul(w)?
-        } else {
-            hidden_states.clone()
-        };
-        let val_dim = values.dim(1)?;
-
-        // 3. Compute bucket IDs
-        // projs: [total_tokens, ksim * r_reps]
-        let projs = hidden_states.matmul(&self.g)?;
-        let bits = projs.gt(&projs.zeros_like()?)?.to_dtype(DType::U32)?; // [total_tokens, ksim * r_reps]
-        
-        // Reshape bits to [total_tokens, r_reps, ksim]
-        let total_tokens = bits.dim(0)?;
-        let bits = bits.reshape((total_tokens, self.config.r_reps, self.config.ksim))?;
-
-        // Powers of 2: [1, 2, 4, ...]
-        let powers: Vec<u32> = (0..self.config.ksim).map(|i| 1 << i).collect();
-        let powers = Tensor::from_vec(powers, (self.config.ksim,), &self.device)?;
-        
-        // bucket_ids: [total_tokens, r_reps]
-        // Summing in F32 to ensure support, then casting to I64 for indexing
-        let bits_f = bits.to_dtype(DType::F32)?;
-        let powers_f = powers.to_dtype(DType::F32)?;
-        let bucket_ids = (bits_f.broadcast_mul(&powers_f)?.sum_keepdim(2)?.squeeze(2))?.to_dtype(DType::I64)?;
-
-        let num_buckets = 1 << self.config.ksim;
-
-        // 4. Create global indices for scatter_add
-        // We need doc_ids for each token.
-        // cumulative_seq_lengths gives us the boundaries.
-        // We can construct doc_ids tensor.
+        let total_tokens = hidden_states.dim(0)?;
         let batch_size = cumulative_seq_lengths.len() - 1;
-        let mut doc_ids_vec = Vec::with_capacity(total_tokens);
-        for i in 0..batch_size {
-            let start = cumulative_seq_lengths[i] as usize;
-            let end = cumulative_seq_lengths[i+1] as usize;
-            for _ in start..end {
-                doc_ids_vec.push(i as u32);
-            }
-        }
-        let doc_ids = Tensor::from_vec(doc_ids_vec, (total_tokens,), &self.device)?.to_dtype(DType::I64)?;
-        
-        // Expand doc_ids: [total_tokens, r_reps]
-        let doc_ids_expanded = doc_ids.unsqueeze(1)?.broadcast_as((total_tokens, self.config.r_reps))?;
-
-        // R indices: [total_tokens, r_reps]
-        let r_indices: Vec<u32> = (0..self.config.r_reps as u32).collect();
-        let r_indices = Tensor::from_vec(r_indices, (self.config.r_reps,), &self.device)?.to_dtype(DType::I64)?;
-        let r_indices = r_indices.unsqueeze(0)?.broadcast_as((total_tokens, self.config.r_reps))?;
-
-        // Global index: doc_id * (R * num_buckets) + r * num_buckets + bucket_id
-        // Shape: [total_tokens, r_reps]
-        let stride_doc = (self.config.r_reps * num_buckets) as u32;
-        let stride_r = num_buckets as u32;
-        
-        // Convert strides to tensors for broadcasting (I64 arithmetic)
-        let stride_doc_t = Tensor::new(stride_doc as i64, &self.device)?;
-        let stride_r_t = Tensor::new(stride_r as i64, &self.device)?;
-        
-        let global_indices = doc_ids_expanded.broadcast_mul(&stride_doc_t)?
-            .add(&r_indices.broadcast_mul(&stride_r_t)?)?
-            .add(&bucket_ids)?;
-        
-        // Flatten indices: [total_tokens * r_reps]
-        let global_indices_flat = global_indices.flatten_all()?.to_dtype(DType::I64)?;
-
-        // Values need to be repeated for each rep?
-        // values: [total_tokens, val_dim]
-        // We need [total_tokens, r_reps, val_dim] -> [total_tokens * r_reps, val_dim]
-        let values_expanded = values.unsqueeze(1)?.broadcast_as((total_tokens, self.config.r_reps, val_dim))?;
-        let values_flat = values_expanded.reshape((total_tokens * self.config.r_reps, val_dim))?;
+        let num_buckets = 1 << self.config.ksim;
+        let val_dim = if self.config.d_proj > 0 { self.config.d_proj } else { hidden_states.dim(1)? };
 
         // Output tensor: [batch_size * r_reps * num_buckets, val_dim]
         let out_size = batch_size * self.config.r_reps * num_buckets;
-        let out_flat = Tensor::zeros((out_size, val_dim), DType::F16, &self.device)?;
+        let mut out_flat = Tensor::zeros((out_size, val_dim), DType::F16, &self.device)?;
+        
+        // We need these for filling empty clusters
+        let mut global_indices_flat = None;
+        let mut values = None;
+        let mut doc_ids = None;
 
-        // Scatter add
-        // Candle's index_add adds `source` to `self` at `indices`.
-        // `self.index_add(dim, index, source)`
-        // dim=0. index=global_indices_flat. source=values_flat.
-        let out_flat = out_flat.index_add(&global_indices_flat, &values_flat, 0)?;
+        if total_tokens > 0 {
+            // 1. Normalize tokens
+            let hidden_states = normalize_rows(hidden_states)?;
+
+            // 2. Project values (W)
+            let v = if let Some(w) = &self.w {
+                hidden_states.matmul(w)?
+            } else {
+                hidden_states.clone()
+            };
+            
+            // 3. Compute bucket IDs
+            // projs: [total_tokens, ksim * r_reps]
+            let projs = hidden_states.matmul(&self.g)?;
+            let bits = projs.gt(&projs.zeros_like()?)?.to_dtype(DType::U32)?; // [total_tokens, ksim * r_reps]
+            
+            // Reshape bits to [total_tokens, r_reps, ksim]
+            let bits = bits.reshape((total_tokens, self.config.r_reps, self.config.ksim))?;
+
+            // Powers of 2: [1, 2, 4, ...]
+            let powers: Vec<u32> = (0..self.config.ksim).map(|i| 1 << i).collect();
+            let powers = Tensor::from_vec(powers, (self.config.ksim,), &self.device)?;
+            
+            // bucket_ids: [total_tokens, r_reps]
+            // Summing in F32 to ensure support, then casting to I64 for indexing
+            let bits_f = bits.to_dtype(DType::F32)?;
+            let powers_f = powers.to_dtype(DType::F32)?;
+            let bucket_ids = (bits_f.broadcast_mul(&powers_f)?.sum_keepdim(2)?.squeeze(2))?.to_dtype(DType::I64)?;
+
+            // 4. Create global indices for scatter_add
+            // We need doc_ids for each token.
+            // cumulative_seq_lengths gives us the boundaries.
+            // We can construct doc_ids tensor.
+            let mut doc_ids_vec = Vec::with_capacity(total_tokens);
+            for i in 0..batch_size {
+                let start = cumulative_seq_lengths[i] as usize;
+                let end = cumulative_seq_lengths[i+1] as usize;
+                for _ in start..end {
+                    doc_ids_vec.push(i as u32);
+                }
+            }
+            let d_ids = Tensor::from_vec(doc_ids_vec, (total_tokens,), &self.device)?.to_dtype(DType::I64)?;
+            
+            // Expand doc_ids: [total_tokens, r_reps]
+            let doc_ids_expanded = d_ids.unsqueeze(1)?.broadcast_as((total_tokens, self.config.r_reps))?;
+
+            // R indices: [total_tokens, r_reps]
+            let r_indices: Vec<u32> = (0..self.config.r_reps as u32).collect();
+            let r_indices = Tensor::from_vec(r_indices, (self.config.r_reps,), &self.device)?.to_dtype(DType::I64)?;
+            let r_indices = r_indices.unsqueeze(0)?.broadcast_as((total_tokens, self.config.r_reps))?;
+
+            // Global index: doc_id * (R * num_buckets) + r * num_buckets + bucket_id
+            // Shape: [total_tokens, r_reps]
+            let stride_doc = (self.config.r_reps * num_buckets) as u32;
+            let stride_r = num_buckets as u32;
+            
+            // Convert strides to tensors for broadcasting (I64 arithmetic)
+            let stride_doc_t = Tensor::new(stride_doc as i64, &self.device)?;
+            let stride_r_t = Tensor::new(stride_r as i64, &self.device)?;
+            
+            let global_indices = doc_ids_expanded.broadcast_mul(&stride_doc_t)?
+                .add(&r_indices.broadcast_mul(&stride_r_t)?)?
+                .add(&bucket_ids)?;
+            
+            // Flatten indices: [total_tokens * r_reps]
+            let g_indices_flat = global_indices.flatten_all()?.to_dtype(DType::I64)?;
+
+            // Values need to be repeated for each rep?
+            // values: [total_tokens, val_dim]
+            // We need [total_tokens, r_reps, val_dim] -> [total_tokens * r_reps, val_dim]
+            let values_expanded = v.unsqueeze(1)?.broadcast_as((total_tokens, self.config.r_reps, val_dim))?;
+            let values_flat = values_expanded.reshape((total_tokens * self.config.r_reps, val_dim))?;
+
+            // Scatter add
+            // Candle's index_add adds `source` to `self` at `indices`.
+            // `self.index_add(dim, index, source)`
+            // dim=0. index=global_indices_flat. source=values_flat.
+            out_flat = out_flat.index_add(&g_indices_flat, &values_flat, 0)?;
+            
+            global_indices_flat = Some(g_indices_flat);
+            values = Some(v);
+            doc_ids = Some(d_ids);
+        }
 
         // 5. Fill empty clusters (Simple mean strategy)
         // Count items per bucket
-        let ones = Tensor::ones_like(&global_indices_flat)?.to_dtype(DType::F16)?;
-        // We need to index_add ones to counts.
-        // counts_flat: [out_size] (but index_add expects source to have same dims as self except at dim)
-        // So we need counts_flat to be [out_size, 1] or similar? No, index_add works on dim 0.
-        // If out_flat is 2D, source must be 2D.
-        // So we can compute counts separately.
-        let counts_flat = Tensor::zeros((out_size,), DType::F16, &self.device)?;
-        let counts_flat = counts_flat.index_add(&global_indices_flat, &ones, 0)?;
+        let counts_flat = if let Some(indices) = &global_indices_flat {
+             let ones = Tensor::ones((indices.dim(0)?,), DType::F16, &self.device)?;
+             let mut counts = Tensor::zeros((out_size,), DType::F16, &self.device)?;
+             counts = counts.index_add(indices, &ones, 0)?;
+             counts
+        } else {
+             Tensor::zeros((out_size,), DType::F16, &self.device)?
+        };
 
-        // Identify empty buckets
         let is_empty = counts_flat.eq(&counts_flat.zeros_like()?)?; // [out_size]
 
         // Compute doc means
-        // We can compute sum per doc using index_add on doc_ids
-        let doc_sums = Tensor::zeros((batch_size, val_dim), DType::F16, &self.device)?;
-        let doc_sums = doc_sums.index_add(&doc_ids, &values, 0)?;
-        
-        // Doc counts
-        let mut doc_lens_vec = Vec::with_capacity(batch_size);
-        for i in 0..batch_size {
-            let len = (cumulative_seq_lengths[i+1] - cumulative_seq_lengths[i]) as f64;
-            doc_lens_vec.push(len.max(1.0));
-        }
-        let doc_lens = Tensor::from_vec(doc_lens_vec, (batch_size, 1), &self.device)?.to_dtype(DType::F16)?;
-        let doc_means = (doc_sums / doc_lens)?; // [batch_size, val_dim]
+        let doc_means = if let (Some(v), Some(d_ids)) = (&values, &doc_ids) {
+            let mut doc_sums = Tensor::zeros((batch_size, val_dim), DType::F16, &self.device)?;
+            doc_sums = doc_sums.index_add(d_ids, v, 0)?;
+            
+            let mut doc_lens_vec = Vec::with_capacity(batch_size);
+            for i in 0..batch_size {
+                let len = (cumulative_seq_lengths[i+1] - cumulative_seq_lengths[i]) as f64;
+                doc_lens_vec.push(len.max(1.0));
+            }
+            let doc_lens = Tensor::from_vec(doc_lens_vec, (batch_size, 1), &self.device)?.to_dtype(DType::F16)?;
+            (doc_sums / doc_lens)? // [batch_size, val_dim]
+        } else {
+            Tensor::zeros((batch_size, val_dim), DType::F16, &self.device)?
+        };
 
         // Expand doc_means to [out_size, val_dim]
         // out_size = batch_size * r_reps * num_buckets
@@ -257,6 +269,6 @@ impl FdeModule {
 }
 
 fn normalize_rows(x: &Tensor) -> Result<Tensor> {
-    let norm = x.sqr()?.sum_keepdim(1)?.sqrt()?;
+    let norm = (x.sqr()?.sum_keepdim(1)? + 1e-12)?.sqrt()?;
     x.broadcast_div(&norm)
 }
