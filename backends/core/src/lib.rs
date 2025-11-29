@@ -96,6 +96,8 @@ pub enum Pool {
     /// Select the last token as embedding
     LastToken,
     /// Apply FDE (Fixed Dimensional Encoding) pooling
+    #[cfg_attr(feature = "clap", clap(name = "bge_m3_fde"))]
+    #[serde(rename = "bge_m3_fde")]
     Fde,
 }
 
@@ -106,7 +108,7 @@ impl fmt::Display for Pool {
             Pool::Mean => write!(f, "mean"),
             Pool::Splade => write!(f, "splade"),
             Pool::LastToken => write!(f, "last_token"),
-            Pool::Fde => write!(f, "fde"),
+            Pool::Fde => write!(f, "bge_m3_fde"),
         }
     }
 }

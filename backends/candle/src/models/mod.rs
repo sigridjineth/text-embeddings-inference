@@ -13,6 +13,7 @@ mod mistral;
 mod modernbert;
 mod nomic;
 pub mod fde_bert;
+pub mod fde;
 
 #[cfg(feature = "cuda")]
 mod flash_bert;

@@ -8,6 +8,7 @@ use crate::models::Model;
 use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
+use crate::models::fde::{FdeConfig, FdeModule};
 
 struct BertAttention {
     qkv_linear: Linear,
@@ -220,6 +221,7 @@ pub struct FlashBertModel {
     pool: Pool,
     classifier: Option<Box<dyn ClassificationHead + Send>>,
     splade: Option<BertSpladeHead>,
+    fde: Option<FdeModule>,
 
     pub device: Device,
 
@@ -259,6 +261,16 @@ impl FlashBertModel {
                 };
                 (pool, None, splade)
             }
+                };
+                (pool, None, splade, None)
+            }
+        };
+
+        let fde = if pool == Pool::Fde {
+            let fde_config = FdeConfig::from_env()?;
+            Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?)
+        } else {
+            None
         };
 
         let (embeddings, encoder) = match (
@@ -326,6 +338,16 @@ impl FlashBertModel {
                 };
                 (pool, None, splade)
             }
+                };
+                (pool, None, splade, None)
+            }
+        };
+
+        let fde = if pool == Pool::Fde {
+            let fde_config = FdeConfig::from_env()?;
+            Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?)
+        } else {
+            None
         };
 
         let (embeddings, encoder) = match (
@@ -488,7 +510,10 @@ impl FlashBertModel {
                         Some(relu_log.max_keepdim(0)?)
                     }
                 }
-                Pool::Fde => candle::bail!("FDE pooling is not supported for this model"),
+                Pool::Fde => {
+                    let fde = self.fde.as_ref().unwrap();
+                    Some(fde.forward(&outputs, &batch)?)
+                }
             }
         } else {
             None
