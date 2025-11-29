@@ -1,4 +1,4 @@
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{DType, Device, Result, Tensor};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use serde::Deserialize;
@@ -67,13 +67,13 @@ impl FdeModule {
 
         // G: [hidden_size, ksim * r_reps]
         let g_shape = (hidden_size, config.ksim * config.r_reps);
-        let g_data: Vec<f32> = (0..g_shape.0 * g_shape.1).map(|_| rng.sample(rand::distributions::Standard)).collect();
+        let g_data: Vec<f32> = (0..g_shape.0 * g_shape.1).map(|_| rng.gen()).collect();
         let g = Tensor::from_vec(g_data, g_shape, device)?.to_dtype(DType::F16)?;
 
         // W: [hidden_size, d_proj]
         let w = if config.d_proj > 0 {
             let w_shape = (hidden_size, config.d_proj);
-            let w_data: Vec<f32> = (0..w_shape.0 * w_shape.1).map(|_| rng.sample(rand::distributions::Standard)).collect();
+            let w_data: Vec<f32> = (0..w_shape.0 * w_shape.1).map(|_| rng.gen()).collect();
             let w = Tensor::from_vec(w_data, w_shape, device)?.to_dtype(DType::F16)?;
             // Normalize by sqrt(d)
             Some((w / (hidden_size as f64).sqrt())?)
@@ -86,7 +86,7 @@ impl FdeModule {
             let val_dim = if config.d_proj > 0 { config.d_proj } else { hidden_size };
             let fde_dim = config.r_reps * (1 << config.ksim) * val_dim;
             let p_shape = (fde_dim, config.d_final);
-            let p_data: Vec<f32> = (0..p_shape.0 * p_shape.1).map(|_| rng.sample(rand::distributions::Standard)).collect();
+            let p_data: Vec<f32> = (0..p_shape.0 * p_shape.1).map(|_| rng.gen()).collect();
             let p = Tensor::from_vec(p_data, p_shape, device)?.to_dtype(DType::F16)?;
             // Normalize by sqrt(fde_dim)
             Some((p / (fde_dim as f64).sqrt())?)
