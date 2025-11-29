@@ -221,6 +221,7 @@ pub struct FlashBertModel {
     pool: Pool,
     classifier: Option<Box<dyn ClassificationHead + Send>>,
     splade: Option<BertSpladeHead>,
+    colbert_linear: Option<Linear>,
     fde: Option<FdeModule>,
 
     pub device: Device,
@@ -508,7 +509,39 @@ impl FlashBertModel {
                 }
                 Pool::Fde => {
                     let fde = self.fde.as_ref().unwrap();
-                    let all = fde.forward(&outputs, &batch.cumulative_seq_lengths)?;
+                    let colbert = self.colbert_linear.as_ref().unwrap();
+
+                    // 1. Remove CLS tokens (first token of each sequence)
+                    // We need to construct indices to keep.
+                    let mut keep_indices = Vec::with_capacity(shape - batch_size);
+                    let mut new_cu_seqlens = Vec::with_capacity(batch_size + 1);
+                    new_cu_seqlens.push(0);
+                    
+                    for i in 0..batch_size {
+                        let start = batch.cumulative_seq_lengths[i] as usize;
+                        let end = batch.cumulative_seq_lengths[i+1] as usize;
+                        // Skip CLS (start)
+                        for j in (start + 1)..end {
+                            keep_indices.push(j as u32);
+                        }
+                        new_cu_seqlens.push(keep_indices.len() as u32);
+                    }
+                    
+                    let keep_indices_tensor = Tensor::from_vec(keep_indices, keep_indices.len(), &self.device)?;
+                    let colbert_vecs = outputs.index_select(&keep_indices_tensor, 0)?;
+
+                    // 2. Apply ColBERT linear
+                    let colbert_vecs = colbert.forward(&colbert_vecs)?;
+
+                    // 3. L2 Normalize
+                    // normalize_rows is not available here, implement inline or use helper
+                    // Helper: x / x.sqr().sum_keepdim(1).sqrt()
+                    let norm = colbert_vecs.sqr()?.sum_keepdim(1)?.sqrt()?;
+                    let colbert_vecs = colbert_vecs.broadcast_div(&norm)?;
+
+                    // 4. FDE Forward
+                    let all = fde.forward(&colbert_vecs, &new_cu_seqlens)?;
+                    
                     if has_raw_requests {
                         let pooled_indices = Tensor::from_vec(
                             batch.pooled_indices.clone(),
