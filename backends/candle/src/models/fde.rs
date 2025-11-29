@@ -233,7 +233,8 @@ impl FdeModule {
                 doc_lens_vec.push(len.max(1.0));
             }
             let doc_lens = Tensor::from_vec(doc_lens_vec, (batch_size, 1), &self.device)?.to_dtype(DType::F16)?;
-            (doc_sums / doc_lens)? // [batch_size, val_dim]
+            let doc_lens = doc_lens.broadcast_as((batch_size, val_dim))?;
+            (doc_sums / &doc_lens)? // [batch_size, val_dim]
         } else {
             Tensor::zeros((batch_size, val_dim), DType::F16, &self.device)?
         };
@@ -269,6 +270,9 @@ impl FdeModule {
 }
 
 fn normalize_rows(x: &Tensor) -> Result<Tensor> {
+    let batch_size = x.dim(0)?;
+    let dim = x.dim(1)?;
     let norm = (x.sqr()?.sum_keepdim(1)? + 1e-12)?.sqrt()?;
-    x.broadcast_div(&norm)
+    let norm = norm.broadcast_as((batch_size, dim))?;
+    x / &norm
 }

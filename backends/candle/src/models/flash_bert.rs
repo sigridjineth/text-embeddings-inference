@@ -632,8 +632,11 @@ impl FlashBertModel {
                         // 3. L2 Normalize
                         // normalize_rows is not available here, implement inline or use helper
                         // Helper: x / (x.sqr().sum_keepdim(1).sqrt() + eps)
+                        let bs = colbert_vecs.dim(0)?;
+                        let dim = colbert_vecs.dim(1)?;
                         let norm = (colbert_vecs.sqr()?.sum_keepdim(1)? + 1e-12)?.sqrt()?;
-                        colbert_vecs.broadcast_div(&norm)?
+                        let norm = norm.broadcast_as((bs, dim))?;
+                        colbert_vecs / &norm
                     } else {
                         // If no tokens left (e.g. single token input), create empty tensor
                         // Skip linear and norm to avoid FPE
