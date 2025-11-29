@@ -66,7 +66,8 @@ impl FdeModule {
         let mut rng = StdRng::seed_from_u64(config.seed);
 
         // Helper for Uniform[-1, 1]
-        let mut gen_uniform = || (2.0 * rng.random::<f32>() - 1.0);
+        #[allow(deprecated)]
+        let mut gen_uniform = || (2.0 * rng.gen::<f32>() - 1.0);
 
         // G: [hidden_size, ksim * r_reps]
         let g_shape = (hidden_size, config.ksim * config.r_reps);
@@ -135,7 +136,10 @@ impl FdeModule {
         let powers = Tensor::from_vec(powers, (self.config.ksim,), &self.device)?;
         
         // bucket_ids: [total_tokens, r_reps]
-        let bucket_ids = (bits.broadcast_mul(&powers)?.sum_keepdim(2)?.squeeze(2))?;
+        // Summing in F32 to ensure support, then casting to I64 for indexing
+        let bits_f = bits.to_dtype(DType::F32)?;
+        let powers_f = powers.to_dtype(DType::F32)?;
+        let bucket_ids = (bits_f.broadcast_mul(&powers_f)?.sum_keepdim(2)?.squeeze(2))?.to_dtype(DType::I64)?;
 
         let num_buckets = 1 << self.config.ksim;
 
@@ -152,14 +156,14 @@ impl FdeModule {
                 doc_ids_vec.push(i as u32);
             }
         }
-        let doc_ids = Tensor::from_vec(doc_ids_vec, (total_tokens,), &self.device)?;
+        let doc_ids = Tensor::from_vec(doc_ids_vec, (total_tokens,), &self.device)?.to_dtype(DType::I64)?;
         
         // Expand doc_ids: [total_tokens, r_reps]
         let doc_ids_expanded = doc_ids.unsqueeze(1)?.broadcast_as((total_tokens, self.config.r_reps))?;
 
         // R indices: [total_tokens, r_reps]
         let r_indices: Vec<u32> = (0..self.config.r_reps as u32).collect();
-        let r_indices = Tensor::from_vec(r_indices, (self.config.r_reps,), &self.device)?;
+        let r_indices = Tensor::from_vec(r_indices, (self.config.r_reps,), &self.device)?.to_dtype(DType::I64)?;
         let r_indices = r_indices.unsqueeze(0)?.broadcast_as((total_tokens, self.config.r_reps))?;
 
         // Global index: doc_id * (R * num_buckets) + r * num_buckets + bucket_id
@@ -167,16 +171,16 @@ impl FdeModule {
         let stride_doc = (self.config.r_reps * num_buckets) as u32;
         let stride_r = num_buckets as u32;
         
-        // Convert strides to tensors for broadcasting (U32 arithmetic)
-        let stride_doc_t = Tensor::new(stride_doc, &self.device)?;
-        let stride_r_t = Tensor::new(stride_r, &self.device)?;
+        // Convert strides to tensors for broadcasting (I64 arithmetic)
+        let stride_doc_t = Tensor::new(stride_doc as i64, &self.device)?;
+        let stride_r_t = Tensor::new(stride_r as i64, &self.device)?;
         
         let global_indices = doc_ids_expanded.broadcast_mul(&stride_doc_t)?
             .add(&r_indices.broadcast_mul(&stride_r_t)?)?
             .add(&bucket_ids)?;
         
         // Flatten indices: [total_tokens * r_reps]
-        let global_indices_flat = global_indices.flatten_all()?.to_dtype(DType::U32)?;
+        let global_indices_flat = global_indices.flatten_all()?.to_dtype(DType::I64)?;
 
         // Values need to be repeated for each rep?
         // values: [total_tokens, val_dim]
