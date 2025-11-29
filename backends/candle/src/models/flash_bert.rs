@@ -407,15 +407,22 @@ impl FlashBertModel {
                     let pt_path = path.join("colbert_linear.pt");
                     if pt_path.exists() {
                         tracing::info!("Found separate colbert_linear.pt at {:?}", pt_path);
+                        tracing::info!("Loading VarBuilder from pth...");
                         let vb_colbert = VarBuilder::from_pth(&pt_path, vb.dtype(), vb.device())?;
+                        tracing::info!("VarBuilder loaded. Getting weights...");
                         // Try "weight" or "linear.weight"
                         if let Ok(w) = vb_colbert.get((config.hidden_size, config.hidden_size), "weight") {
+                            tracing::info!("Found 'weight'. Getting bias...");
                             let b = vb_colbert.get(config.hidden_size, "bias")?;
+                            tracing::info!("Creating Linear layer...");
                             loaded = Some(Linear::new(w, Some(b), None));
                         } else if let Ok(w) = vb_colbert.get((config.hidden_size, config.hidden_size), "linear.weight") {
+                            tracing::info!("Found 'linear.weight'. Getting bias...");
                             let b = vb_colbert.get(config.hidden_size, "linear.bias")?;
+                            tracing::info!("Creating Linear layer...");
                             loaded = Some(Linear::new(w, Some(b), None));
                         }
+                        tracing::info!("colbert_linear loading attempt finished.");
                     }
                 }
                 
@@ -426,6 +433,7 @@ impl FlashBertModel {
                 }
             };
             
+            tracing::info!("FDE and ColBERT linear loaded successfully.");
             (fde, colbert_linear)
         } else {
             (None, None)
