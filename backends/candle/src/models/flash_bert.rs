@@ -508,7 +508,7 @@ impl FlashBertModel {
                 }
                 Pool::Fde => {
                     let fde = self.fde.as_ref().unwrap();
-                    Some(fde.forward(&outputs, &batch)?)
+                    Some(fde.forward(&outputs, &batch.cumulative_seq_lengths)?)
                 }
             }
         } else {

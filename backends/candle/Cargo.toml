@@ -25,6 +25,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 memmap2 = "^0.9"
+rand = { workspace = true }
 
 [dev-dependencies]
 insta = { git = "https://github.com/OlivierDehaene/insta", rev = "f4f98c0410b91fb5a28b10df98e4422955be9c2c", features = ["yaml"] }

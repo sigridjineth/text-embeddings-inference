@@ -1,5 +1,4 @@
 use candle::{DType, Device, IndexOp, Result, Tensor};
-use candle_nn::{Module, VarBuilder};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use serde::Deserialize;
@@ -34,6 +33,9 @@ impl Default for FdeConfig {
             seed: default_seed(),
         }
     }
+}
+
+impl FdeConfig {
     pub fn from_env() -> Result<Self> {
         let ksim = std::env::var("FDE_KSIM").ok().and_then(|v| v.parse().ok()).unwrap_or_else(default_ksim);
         let d_proj = std::env::var("FDE_D_PROJ").ok().and_then(|v| v.parse().ok()).unwrap_or_else(default_d_proj);
@@ -101,10 +103,9 @@ impl FdeModule {
         })
     }
 
-    pub fn forward(&self, hidden_states: &Tensor, batch_info: &text_embeddings_backend_core::Batch) -> Result<Tensor> {
+    pub fn forward(&self, hidden_states: &Tensor, cumulative_seq_lengths: &[u32]) -> Result<Tensor> {
         // hidden_states: [total_tokens, hidden_size]
-        // We assume hidden_states are already flattened from the batch (which they are in FlashBertModel)
-        // But wait, FlashBertModel output `outputs` is [total_tokens, hidden_size].
+        // cumulative_seq_lengths: [batch_size + 1]
         
         // 1. Normalize tokens
         let hidden_states = normalize_rows(hidden_states)?;
@@ -137,13 +138,13 @@ impl FdeModule {
 
         // 4. Create global indices for scatter_add
         // We need doc_ids for each token.
-        // batch_info.cumulative_seq_lengths gives us the boundaries.
+        // cumulative_seq_lengths gives us the boundaries.
         // We can construct doc_ids tensor.
-        let batch_size = batch_info.len();
+        let batch_size = cumulative_seq_lengths.len() - 1;
         let mut doc_ids_vec = Vec::with_capacity(total_tokens);
         for i in 0..batch_size {
-            let start = batch_info.cumulative_seq_lengths[i] as usize;
-            let end = batch_info.cumulative_seq_lengths[i+1] as usize;
+            let start = cumulative_seq_lengths[i] as usize;
+            let end = cumulative_seq_lengths[i+1] as usize;
             for _ in start..end {
                 doc_ids_vec.push(i as u32);
             }
@@ -208,7 +209,7 @@ impl FdeModule {
         // Doc counts
         let mut doc_lens_vec = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
-            let len = (batch_info.cumulative_seq_lengths[i+1] - batch_info.cumulative_seq_lengths[i]) as f64;
+            let len = (cumulative_seq_lengths[i+1] - cumulative_seq_lengths[i]) as f64;
             doc_lens_vec.push(len.max(1.0));
         }
         let doc_lens = Tensor::from_vec(doc_lens_vec, (batch_size, 1), &self.device)?.to_dtype(DType::F16)?;
