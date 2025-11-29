@@ -325,9 +325,9 @@ impl FlashDistilBertModel {
                             .collect();
 
                         // Concatenate all results
-                        Some(Tensor::cat(&results?, 0)?)
+                        Tensor::cat(&results?, 0)?
                     } else {
-                        Some((outputs.sum_keepdim(0)? / (batch.max_length as f64))?)
+                        (outputs.sum_keepdim(0)? / (batch.max_length as f64))?
                     }
                 }
                 Pool::Fde => candle::bail!("FDE pooling is not supported for this model"),
