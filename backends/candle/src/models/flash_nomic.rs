@@ -386,7 +386,7 @@ impl FlashNomicBertModel {
                     }
                 }
                 Pool::Fde => candle::bail!("FDE pooling is not supported for this model"),
-            }    Pool::Splade => {
+                Pool::Splade => {
                     unreachable!();
                 }
             }
