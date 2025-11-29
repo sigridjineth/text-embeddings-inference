@@ -370,7 +370,7 @@ impl CandleBackend {
                         }
                         BertConfigWrapper::Bert(config) => {
                             tracing::info!("Starting FlashBert model on {:?}", device);
-                            Ok(Box::new(FlashBertModel::load(vb, &config, model_type).s()?))
+                            Ok(Box::new(FlashBertModel::load(vb, &config, model_type, Some(model_path)).s()?))
                         }
                     }
                 } else {
@@ -405,7 +405,7 @@ impl CandleBackend {
                 {
                     tracing::info!("Starting FlashBert model on {:?}", device);
                     Ok(Box::new(
-                        FlashBertModel::load_roberta(vb, &config, model_type).s()?,
+                        FlashBertModel::load_roberta(vb, &config, model_type, Some(model_path)).s()?,
                     ))
                 } else {
                     tracing::info!("Starting Bert model on {:?}", device);

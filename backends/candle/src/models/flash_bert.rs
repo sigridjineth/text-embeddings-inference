@@ -230,7 +230,12 @@ pub struct FlashBertModel {
 }
 
 impl FlashBertModel {
-    pub fn load(vb: VarBuilder, config: &BertConfig, model_type: ModelType) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &BertConfig,
+        model_type: ModelType,
+        model_path: Option<&std::path::Path>,
+    ) -> Result<Self> {
         match vb.device() {
             Device::Cuda(_) => {}
             _ => candle::bail!("FlashBert requires Cuda"),
@@ -269,9 +274,19 @@ impl FlashBertModel {
             let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?);
             
             // Load ColBERT linear layer for BGE-M3
-            let colbert_weight = vb.pp("colbert_linear").get((config.hidden_size, config.hidden_size), "weight")?;
-            let colbert_bias = vb.pp("colbert_linear").get(config.hidden_size, "bias")?;
-            let colbert_linear = Some(Linear::new(colbert_weight, Some(colbert_bias), None));
+            // Try multiple prefixes
+            let colbert_linear = if let Ok(w) = vb.pp("colbert_linear").get((config.hidden_size, config.hidden_size), "weight") {
+                let b = vb.pp("colbert_linear").get(config.hidden_size, "bias")?;
+                Some(Linear::new(w, Some(b), None))
+            } else if let Ok(w) = vb.pp("model.colbert_linear").get((config.hidden_size, config.hidden_size), "weight") {
+                let b = vb.pp("model.colbert_linear").get(config.hidden_size, "bias")?;
+                Some(Linear::new(w, Some(b), None))
+            } else if let Ok(w) = vb.pp("roberta.colbert_linear").get((config.hidden_size, config.hidden_size), "weight") {
+                let b = vb.pp("roberta.colbert_linear").get(config.hidden_size, "bias")?;
+                Some(Linear::new(w, Some(b), None))
+            } else {
+                candle::bail!("Could not find colbert_linear weights. Please ensure you are using a BGE-M3 model.")
+            };
             
             (fde, colbert_linear)
         } else {
@@ -312,6 +327,7 @@ impl FlashBertModel {
         vb: VarBuilder,
         config: &BertConfig,
         model_type: ModelType,
+        model_path: Option<&std::path::Path>,
     ) -> Result<Self> {
         match vb.device() {
             Device::Cuda(_) => {}
@@ -352,9 +368,19 @@ impl FlashBertModel {
             let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?);
             
             // Load ColBERT linear layer for BGE-M3
-            let colbert_weight = vb.pp("colbert_linear").get((config.hidden_size, config.hidden_size), "weight")?;
-            let colbert_bias = vb.pp("colbert_linear").get(config.hidden_size, "bias")?;
-            let colbert_linear = Some(Linear::new(colbert_weight, Some(colbert_bias), None));
+            // Try multiple prefixes
+            let colbert_linear = if let Ok(w) = vb.pp("colbert_linear").get((config.hidden_size, config.hidden_size), "weight") {
+                let b = vb.pp("colbert_linear").get(config.hidden_size, "bias")?;
+                Some(Linear::new(w, Some(b), None))
+            } else if let Ok(w) = vb.pp("model.colbert_linear").get((config.hidden_size, config.hidden_size), "weight") {
+                let b = vb.pp("model.colbert_linear").get(config.hidden_size, "bias")?;
+                Some(Linear::new(w, Some(b), None))
+            } else if let Ok(w) = vb.pp("roberta.colbert_linear").get((config.hidden_size, config.hidden_size), "weight") {
+                let b = vb.pp("roberta.colbert_linear").get(config.hidden_size, "bias")?;
+                Some(Linear::new(w, Some(b), None))
+            } else {
+                candle::bail!("Could not find colbert_linear weights. Please ensure you are using a BGE-M3 model.")
+            };
             
             (fde, colbert_linear)
         } else {
