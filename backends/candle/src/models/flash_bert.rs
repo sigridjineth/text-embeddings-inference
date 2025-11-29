@@ -543,7 +543,8 @@ impl FlashBertModel {
                         new_cu_seqlens.push(keep_indices.len() as u32);
                     }
                     
-                    let keep_indices_tensor = Tensor::from_vec(keep_indices, keep_indices.len(), &self.device)?;
+                    let keep_indices_len = keep_indices.len();
+                    let keep_indices_tensor = Tensor::from_vec(keep_indices, keep_indices_len, &self.device)?;
                     let colbert_vecs = outputs.index_select(&keep_indices_tensor, 0)?;
 
                     // 2. Apply ColBERT linear

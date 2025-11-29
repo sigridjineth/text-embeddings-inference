@@ -66,7 +66,7 @@ impl FdeModule {
         let mut rng = StdRng::seed_from_u64(config.seed);
 
         // Helper for Uniform[-1, 1]
-        let mut gen_uniform = || (2.0 * rng.gen::<f32>() - 1.0);
+        let mut gen_uniform = || (2.0 * rng.random::<f32>() - 1.0);
 
         // G: [hidden_size, ksim * r_reps]
         let g_shape = (hidden_size, config.ksim * config.r_reps);
