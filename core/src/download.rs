@@ -56,6 +56,12 @@ pub async fn download_artifacts(
         }
     }
 
+    // Try to download colbert_linear.pt (specific to BGE-M3 FDE)
+    // We ignore errors because it's not required for all models
+    if let Err(err) = api.get("colbert_linear.pt").await {
+        tracing::debug!("Could not download `colbert_linear.pt`: {err}");
+    }
+
     tracing::info!("Downloading `config.json`");
     api.get("config.json").await?;
 
