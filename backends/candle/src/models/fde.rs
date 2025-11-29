@@ -65,15 +65,18 @@ impl FdeModule {
     pub fn new(config: FdeConfig, hidden_size: usize, device: &Device) -> Result<Self> {
         let mut rng = StdRng::seed_from_u64(config.seed);
 
+        // Helper for Uniform[-1, 1]
+        let mut gen_uniform = || (2.0 * rng.gen::<f32>() - 1.0);
+
         // G: [hidden_size, ksim * r_reps]
         let g_shape = (hidden_size, config.ksim * config.r_reps);
-        let g_data: Vec<f32> = (0..g_shape.0 * g_shape.1).map(|_| rng.gen()).collect();
+        let g_data: Vec<f32> = (0..g_shape.0 * g_shape.1).map(|_| gen_uniform()).collect();
         let g = Tensor::from_vec(g_data, g_shape, device)?.to_dtype(DType::F16)?;
 
         // W: [hidden_size, d_proj]
         let w = if config.d_proj > 0 {
             let w_shape = (hidden_size, config.d_proj);
-            let w_data: Vec<f32> = (0..w_shape.0 * w_shape.1).map(|_| rng.gen()).collect();
+            let w_data: Vec<f32> = (0..w_shape.0 * w_shape.1).map(|_| gen_uniform()).collect();
             let w = Tensor::from_vec(w_data, w_shape, device)?.to_dtype(DType::F16)?;
             // Normalize by sqrt(d)
             Some((w / (hidden_size as f64).sqrt())?)
@@ -86,7 +89,7 @@ impl FdeModule {
             let val_dim = if config.d_proj > 0 { config.d_proj } else { hidden_size };
             let fde_dim = config.r_reps * (1 << config.ksim) * val_dim;
             let p_shape = (fde_dim, config.d_final);
-            let p_data: Vec<f32> = (0..p_shape.0 * p_shape.1).map(|_| rng.gen()).collect();
+            let p_data: Vec<f32> = (0..p_shape.0 * p_shape.1).map(|_| gen_uniform()).collect();
             let p = Tensor::from_vec(p_data, p_shape, device)?.to_dtype(DType::F16)?;
             // Normalize by sqrt(fde_dim)
             Some((p / (fde_dim as f64).sqrt())?)
@@ -164,20 +167,13 @@ impl FdeModule {
         let stride_doc = (self.config.r_reps * num_buckets) as u32;
         let stride_r = num_buckets as u32;
         
-        // Convert strides to tensors for broadcasting
-        // Note: We cast to F64 for calculation to avoid potential overflow if indices are large, 
-        // but U32 is usually fine. However, Candle's arithmetic is often smoother with Floats.
-        // But here we have U32 inputs. Let's stick to U32 if possible, or cast inputs to F64.
-        // The error was "lhs: U32, rhs: F64".
-        // Let's cast everything to F64 for safety and then back to U32.
+        // Convert strides to tensors for broadcasting (U32 arithmetic)
+        let stride_doc_t = Tensor::new(stride_doc, &self.device)?;
+        let stride_r_t = Tensor::new(stride_r, &self.device)?;
         
-        let doc_ids_f64 = doc_ids_expanded.to_dtype(DType::F64)?;
-        let r_indices_f64 = r_indices.to_dtype(DType::F64)?;
-        let bucket_ids_f64 = bucket_ids.to_dtype(DType::F64)?;
-        
-        let global_indices = (doc_ids_f64 * stride_doc as f64)?
-            .add(&(r_indices_f64 * stride_r as f64)?)?
-            .add(&bucket_ids_f64)?;
+        let global_indices = doc_ids_expanded.broadcast_mul(&stride_doc_t)?
+            .add(&r_indices.broadcast_mul(&stride_r_t)?)?
+            .add(&bucket_ids)?;
         
         // Flatten indices: [total_tokens * r_reps]
         let global_indices_flat = global_indices.flatten_all()?.to_dtype(DType::U32)?;

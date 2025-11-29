@@ -508,7 +508,17 @@ impl FlashBertModel {
                 }
                 Pool::Fde => {
                     let fde = self.fde.as_ref().unwrap();
-                    Some(fde.forward(&outputs, &batch.cumulative_seq_lengths)?)
+                    let all = fde.forward(&outputs, &batch.cumulative_seq_lengths)?;
+                    if has_raw_requests {
+                        let pooled_indices = Tensor::from_vec(
+                            batch.pooled_indices.clone(),
+                            batch.pooled_indices.len(),
+                            &self.device,
+                        )?;
+                        Some(all.index_select(&pooled_indices, 0)?)
+                    } else {
+                        Some(all)
+                    }
                 }
             }
         } else {
