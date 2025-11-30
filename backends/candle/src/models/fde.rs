@@ -331,8 +331,8 @@ impl FdeModule {
             out_flat
         };
 
-        // 6. L2 Normalize per bucket
-        let out_flat = normalize_rows(&out_flat)?;
+        // 6. L2 Normalize per bucket - REMOVED for equivalence with Python FDEBuilder
+        // let out_flat = normalize_rows(&out_flat)?;
 
         // 7. Reshape and Final Projection
         // [batch_size, r_reps * num_buckets * val_dim]
@@ -349,9 +349,12 @@ impl FdeModule {
 }
 
 fn normalize_rows(x: &Tensor) -> Result<Tensor> {
+    let x_dtype = x.dtype();
+    let x_f32 = x.to_dtype(DType::F32)?;
     let batch_size = x.dim(0)?;
     let dim = x.dim(1)?;
-    let norm = (x.sqr()?.sum_keepdim(1)? + 1e-12)?.sqrt()?;
+    let norm = (x_f32.sqr()?.sum_keepdim(1)? + 1e-12)?.sqrt()?;
     let norm = norm.broadcast_as((batch_size, dim))?;
-    x / &norm
+    let x_norm = (x_f32 / &norm)?;
+    x_norm.to_dtype(x_dtype)
 }
