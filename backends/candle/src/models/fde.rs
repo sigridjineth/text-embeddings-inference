@@ -15,6 +15,8 @@ pub struct FdeConfig {
     pub d_final: usize,
     #[serde(default = "default_seed")]
     pub seed: u64,
+    #[serde(default = "default_fill_empty_clusters")]
+    pub fill_empty_clusters: bool,
 }
 
 fn default_ksim() -> usize { 5 }
@@ -22,6 +24,7 @@ fn default_d_proj() -> usize { 16 }
 fn default_r_reps() -> usize { 10 }
 fn default_d_final() -> usize { 1024 }
 fn default_seed() -> u64 { 42 }
+fn default_fill_empty_clusters() -> bool { true }
 
 impl Default for FdeConfig {
     fn default() -> Self {
@@ -31,6 +34,7 @@ impl Default for FdeConfig {
             r_reps: default_r_reps(),
             d_final: default_d_final(),
             seed: default_seed(),
+            fill_empty_clusters: default_fill_empty_clusters(),
         }
     }
 }
@@ -42,6 +46,7 @@ impl FdeConfig {
         let r_reps = std::env::var("FDE_R_REPS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(default_r_reps);
         let d_final = std::env::var("FDE_D_FINAL").ok().and_then(|v| v.parse().ok()).unwrap_or_else(default_d_final);
         let seed = std::env::var("FDE_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or_else(default_seed);
+        let fill_empty_clusters = std::env::var("FDE_FILL_EMPTY").ok().and_then(|v| v.parse().ok()).unwrap_or_else(default_fill_empty_clusters);
         
         Ok(Self {
             ksim,
@@ -49,6 +54,7 @@ impl FdeConfig {
             r_reps,
             d_final,
             seed,
+            fill_empty_clusters,
         })
     }
 }
@@ -62,7 +68,79 @@ pub struct FdeModule {
 }
 
 impl FdeModule {
-    pub fn new(config: FdeConfig, hidden_size: usize, device: &Device) -> Result<Self> {
+    pub fn new(config: FdeConfig, hidden_size: usize, device: &Device, model_path: Option<&std::path::Path>) -> Result<Self> {
+        // Try to load from safetensors if available
+        let params = if let Some(path) = model_path {
+            let p = path.join("fde_params.safetensors");
+            if p.exists() {
+                tracing::info!("Found fde_params.safetensors at {:?}", p);
+                Some(candle::safetensors::load(&p, device)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(tensors) = params {
+            tracing::info!("Loading FDE params from file...");
+            let g = tensors.get("g").ok_or_else(|| candle::Error::Msg("Missing 'g' in fde_params".into()))?.to_dtype(DType::F16)?;
+            
+            // Validate G shape: [hidden_size, ksim * r_reps]
+            let expected_g_shape = (hidden_size, config.ksim * config.r_reps);
+            if g.shape().dims2()? != expected_g_shape {
+                return Err(candle::Error::Msg(format!(
+                    "G shape mismatch: expected {:?}, got {:?}", 
+                    expected_g_shape, g.shape()
+                )));
+            }
+
+            let w = if let Some(w_tensor) = tensors.get("w") {
+                let w = w_tensor.to_dtype(DType::F16)?;
+                // Validate W shape: [hidden_size, d_proj]
+                if config.d_proj > 0 {
+                    let expected_w_shape = (hidden_size, config.d_proj);
+                    if w.shape().dims2()? != expected_w_shape {
+                        return Err(candle::Error::Msg(format!(
+                            "W shape mismatch: expected {:?}, got {:?}", 
+                            expected_w_shape, w.shape()
+                        )));
+                    }
+                }
+                Some(w)
+            } else {
+                None
+            };
+            
+            let p = if let Some(p_tensor) = tensors.get("p") {
+                let p = p_tensor.to_dtype(DType::F16)?;
+                // Validate P shape: [fde_dim, d_final]
+                if config.d_final > 0 {
+                    let val_dim = if config.d_proj > 0 { config.d_proj } else { hidden_size };
+                    let fde_dim = config.r_reps * (1 << config.ksim) * val_dim;
+                    let expected_p_shape = (fde_dim, config.d_final);
+                    if p.shape().dims2()? != expected_p_shape {
+                        return Err(candle::Error::Msg(format!(
+                            "P shape mismatch: expected {:?}, got {:?}", 
+                            expected_p_shape, p.shape()
+                        )));
+                    }
+                }
+                Some(p)
+            } else {
+                None
+            };
+            
+            return Ok(Self {
+                g,
+                w,
+                p,
+                config,
+                device: device.clone(),
+            });
+        }
+
+        tracing::warn!("fde_params.safetensors not found, falling back to random initialization. This will cause mismatch with Python implementation!");
         let mut rng = StdRng::seed_from_u64(config.seed);
 
         // Helper for Uniform[-1, 1]
@@ -210,47 +288,48 @@ impl FdeModule {
         }
 
         // 5. Fill empty clusters (Simple mean strategy)
-        // Count items per bucket
-        let counts_flat = if let Some(indices) = &global_indices_flat {
-             let ones = Tensor::ones((indices.dim(0)?,), DType::F16, &self.device)?;
-             let mut counts = Tensor::zeros((out_size,), DType::F16, &self.device)?;
-             counts = counts.index_add(indices, &ones, 0)?;
-             counts
+        // Only if enabled
+        let out_flat = if self.config.fill_empty_clusters {
+            // Count items per bucket
+            let counts_flat = if let Some(indices) = &global_indices_flat {
+                 let ones = Tensor::ones((indices.dim(0)?,), DType::F16, &self.device)?;
+                 let mut counts = Tensor::zeros((out_size,), DType::F16, &self.device)?;
+                 counts = counts.index_add(indices, &ones, 0)?;
+                 counts
+            } else {
+                 Tensor::zeros((out_size,), DType::F16, &self.device)?
+            };
+
+            let is_empty = counts_flat.eq(&counts_flat.zeros_like()?)?; // [out_size]
+
+            // Compute doc means
+            let doc_means = if let (Some(v), Some(d_ids)) = (&values, &doc_ids) {
+                let mut doc_sums = Tensor::zeros((batch_size, val_dim), DType::F16, &self.device)?;
+                doc_sums = doc_sums.index_add(d_ids, v, 0)?;
+                
+                let mut doc_lens_vec = Vec::with_capacity(batch_size);
+                for i in 0..batch_size {
+                    let len = (cumulative_seq_lengths[i+1] - cumulative_seq_lengths[i]) as f64;
+                    doc_lens_vec.push(len.max(1.0));
+                }
+                let doc_lens = Tensor::from_vec(doc_lens_vec, (batch_size, 1), &self.device)?.to_dtype(DType::F16)?;
+                let doc_lens = doc_lens.broadcast_as((batch_size, val_dim))?;
+                (doc_sums / &doc_lens)? // [batch_size, val_dim]
+            } else {
+                Tensor::zeros((batch_size, val_dim), DType::F16, &self.device)?
+            };
+
+            // Expand doc_means to [out_size, val_dim]
+            let doc_means_expanded = doc_means.unsqueeze(1)?
+                .broadcast_as((batch_size, self.config.r_reps * num_buckets, val_dim))?
+                .reshape((out_size, val_dim))?;
+
+            // Fill empty
+            let is_empty_expanded = is_empty.unsqueeze(1)?.broadcast_as((out_size, val_dim))?;
+            is_empty_expanded.where_cond(&doc_means_expanded, &out_flat)?
         } else {
-             Tensor::zeros((out_size,), DType::F16, &self.device)?
+            out_flat
         };
-
-        let is_empty = counts_flat.eq(&counts_flat.zeros_like()?)?; // [out_size]
-
-        // Compute doc means
-        let doc_means = if let (Some(v), Some(d_ids)) = (&values, &doc_ids) {
-            let mut doc_sums = Tensor::zeros((batch_size, val_dim), DType::F16, &self.device)?;
-            doc_sums = doc_sums.index_add(d_ids, v, 0)?;
-            
-            let mut doc_lens_vec = Vec::with_capacity(batch_size);
-            for i in 0..batch_size {
-                let len = (cumulative_seq_lengths[i+1] - cumulative_seq_lengths[i]) as f64;
-                doc_lens_vec.push(len.max(1.0));
-            }
-            let doc_lens = Tensor::from_vec(doc_lens_vec, (batch_size, 1), &self.device)?.to_dtype(DType::F16)?;
-            let doc_lens = doc_lens.broadcast_as((batch_size, val_dim))?;
-            (doc_sums / &doc_lens)? // [batch_size, val_dim]
-        } else {
-            Tensor::zeros((batch_size, val_dim), DType::F16, &self.device)?
-        };
-
-        // Expand doc_means to [out_size, val_dim]
-        // out_size = batch_size * r_reps * num_buckets
-        // We need to repeat each doc_mean (r_reps * num_buckets) times.
-        let doc_means_expanded = doc_means.unsqueeze(1)?
-            .broadcast_as((batch_size, self.config.r_reps * num_buckets, val_dim))?
-            .reshape((out_size, val_dim))?;
-
-        // Fill empty
-        // where_cond(condition, on_true, on_false)
-        // condition must be broadcastable. is_empty is [out_size].
-        let is_empty_expanded = is_empty.unsqueeze(1)?.broadcast_as((out_size, val_dim))?;
-        let out_flat = is_empty_expanded.where_cond(&doc_means_expanded, &out_flat)?;
 
         // 6. L2 Normalize per bucket
         let out_flat = normalize_rows(&out_flat)?;

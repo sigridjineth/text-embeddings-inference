@@ -271,7 +271,7 @@ impl FlashBertModel {
 
         let (fde, colbert_linear) = if pool == Pool::Fde {
             let fde_config = FdeConfig::from_env()?;
-            let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?);
+            let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device(), model_path)?);
             
             // Load ColBERT linear layer for BGE-M3
             // 1. Try loading from main weights (vb) with various prefixes
@@ -387,7 +387,7 @@ impl FlashBertModel {
 
         let (fde, colbert_linear) = if pool == Pool::Fde {
             let fde_config = FdeConfig::from_env()?;
-            let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device())?);
+            let fde = Some(FdeModule::new(fde_config, config.hidden_size, vb.device(), model_path)?);
             
             // Load ColBERT linear layer for BGE-M3
             // 1. Try loading from main weights (vb) with various prefixes
